@@ -2323,6 +2323,9 @@ Use ultrathink.
 
 ## Suggestions from Claude Opus 4.5 in Web App:
 
+> Prompt to Claude: "I want you carefully review and analyze this proposal I've just come up with for a new tool that would be useful for agentic coding workflows; I want you to think hard about things that could be improved or fixed or otherwise tweaked, revised, amended, etc to make the system work better, more reliably, more intuitively, in a more user-friendly and ergonomic way for both humans AND coding agents, etc; the provide me with a series of git-diff style changes. For each change, I need you to give me your detailed rationale/justification/reasoning for way the change improves things without introducing excessive additional complexity to the project:"
+
+
 This is a well-thought-out proposal, Jeff. The core concept is solid—creating deliberate friction for destructive commands through peer review is exactly the right approach for multi-agent environments. I've identified several improvements ranging from critical fixes to ergonomic refinements. Here are my recommended changes:
 
 ---
