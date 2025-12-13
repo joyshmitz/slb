@@ -2320,3 +2320,1410 @@ Use ultrathink.
   The plan is now ~2130 lines and ready for beads!
 
 ──────────────────────────────────────────────────────────────────────
+
+## Suggestions from Claude Opus 4.5 in Web App:
+
+This is a well-thought-out proposal, Jeff. The core concept is solid—creating deliberate friction for destructive commands through peer review is exactly the right approach for multi-agent environments. I've identified several improvements ranging from critical fixes to ergonomic refinements. Here are my recommended changes:
+
+---
+
+(Change 1 ignored)
+
+## Change 2: Add Command Fingerprinting to Prevent Replay Attacks
+
+```diff
+ -- Reviews (approvals and rejections)
+ CREATE TABLE reviews (
+ id TEXT PRIMARY KEY,
+ request_id TEXT NOT NULL REFERENCES requests(id),
+
+ -- Reviewer info
+ reviewer_session_id TEXT NOT NULL REFERENCES sessions(id),
+ reviewer_agent TEXT NOT NULL,
+ reviewer_model TEXT NOT NULL,
+
+ -- Decision
+ decision TEXT NOT NULL, -- 'approve' or 'reject'
+- signature TEXT NOT NULL, -- HMAC signature with session key
++ signature TEXT NOT NULL, -- HMAC signature: HMAC(session_key, request_id + decision + timestamp)
++ signature_timestamp TEXT NOT NULL, -- ISO 8601 timestamp included in signature
+
+ -- Structured response to requestor's justification
+```
+
+And add validation logic description:
+
+```diff
+ ### Trust Model
+
+ 1. **Agents are trusted but fallible**: They follow instructions but make mistakes
+ 2. **Honor system**: Agents are instructed to use slb, but can't be forced
+ 3. **Defense in depth**: slb is one layer; combine with file permissions, RBAC, etc.
+ 4. **Audit over prevention**: Focus on knowing what happened, not preventing everything
++
++### Signature Verification
++
++Review signatures include timestamps and are validated as follows:
++- Signature = HMAC-SHA256(session_key, request_id || decision || timestamp)
++- Timestamp must be within 5 minutes of current time (prevents replay)
++- Request ID binding prevents approval from being applied to different request
++- Session key binding ensures only the registered session can sign
+```
+
+**Rationale:** The current HMAC signature scheme doesn't include a timestamp or nonce, making it vulnerable to replay attacks. An attacker who captures a signed approval could replay it for a different (future) request with the same ID structure. Including the timestamp and validating freshness closes this gap without adding significant complexity. This also provides better audit trails since you know exactly when the review was signed.
+
+---
+
+## Change 3: Add Abbreviated Request Mode for Agents
+
+```diff
+ ### Request Commands
+
+ ```bash
+ # Submit a command for approval (primary command for agents)
+ slb request "<command>" \
+ --reason "Why I need to run this" \
+ --expected-effect "What will happen" \
+ --goal "What I'm trying to achieve" \
+ --safety "Why this is safe/reversible" \
+ [--attach-file <path>:<lines>] \
+ [--attach-context "<text>"] \
+ [--session-id <id>] \
+ [--wait] # Block until approved/rejected
+ [--timeout <seconds>]
+
+ Returns: request ID
++
++# Abbreviated request (combines all justification into single field)
++slb request "<command>" \
++ --justification "Combined explanation of why, what, and safety" \
++ [--session-id <id>] \
++ [--wait]
++
++ The system will auto-parse or store as-is. Useful for simple commands
++ where four separate fields is overkill.
+```
+
+**Rationale:** Requiring four separate justification fields for every dangerous command creates significant friction for agents. Many commands (like `rm -rf ./build`) don't need a dissertation—a single sentence suffices. The abbreviated mode lets agents provide a quick justification for straightforward cases while keeping the structured format available for complex CRITICAL operations. This reduces the "paperwork tax" that might lead agents to find ways around slb entirely.
+
+---
+
+## Change 4: Handle Commands with Sensitive Data
+
+```diff
+ ## Security Considerations
+
+ ### What slb IS
+
+ - **Peer review system**: Second opinion on destructive actions
+ - **Audit trail**: Complete record of what was proposed, approved, executed
+ - **Friction mechanism**: Forces deliberation before destruction
+ - **Learning tool**: Patterns can be refined based on outcomes
+
++### Sensitive Data Handling
++
++Commands may contain sensitive data (API keys, passwords, connection strings).
++slb provides options to handle this:
++
++```bash
++# Redact sensitive portions in logs/display (still executes full command)
++slb request 'mysql -p$DB_PASS -e "DROP TABLE users"' \
++ --redact '\$\w+' \ # Redacts env var references
++ --redact 'password=\S+' # Redacts password params
++```
++
++Redaction applies to:
++- TUI display
++- History browser
++- Git audit commits
++- Agent Mail notifications
++
++The **actual command** stored in the database is unredacted for execution,
++but marked with `contains_sensitive = true` flag. Access to raw commands
++requires explicit `--show-sensitive` flag.
++
++**Default redaction patterns** (always applied):
++- `-p<password>`, `--password=<value>`
++- `Bearer <token>`, `Authorization: <value>`
++- Environment variable expansions (`$VAR`, `${VAR}`)
+```
+
+Also add to the schema:
+
+```diff
+ -- Command requests
+ CREATE TABLE requests (
+ id TEXT PRIMARY KEY, -- UUID
+ project_path TEXT NOT NULL,
+ command TEXT NOT NULL,
++ command_display TEXT, -- Redacted version for display (NULL if no redaction)
++ contains_sensitive INTEGER NOT NULL DEFAULT 0,
+ risk_tier TEXT NOT NULL, -- 'critical', 'dangerous', 'caution'
+```
+
+**Rationale:** Real-world commands often contain secrets. Without redaction, slb becomes a liability—sensitive data ends up in SQLite, git commits, desktop notifications, and Agent Mail. This is both a security risk and a compliance problem. The redaction system keeps the audit trail useful while preventing credential exposure. Reviewers can still make informed decisions based on the command structure without seeing actual secrets.
+
+---
+
+## Change 5: Add Execution Timeout and Long-Running Command Handling
+
+```diff
+ ### Execution Commands
+
+ ```bash
+ # Execute an approved request
+-slb execute <request-id> [--session-id <id>]
++slb execute <request-id> [--session-id <id>] \
++ [--timeout <seconds>] # Kill command after timeout (default: 300)
++ [--background] # Don't wait for completion, return PID
+ Runs the command, captures output
+ Returns: exit code, stdout, stderr
+```
+
+And add to the state machine:
+
+```diff
+ ┌─────────────┐
+ │ CANCELLED │
+ └─────────────┘
+ ▲
+ │ cancel
+ │
+ ┌─────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+ │ CREATED │ ───▶ │ PENDING │───▶│ APPROVED │───▶│ EXECUTED │
+ └─────────┘ └─────────────┘ └─────────────┘ └─────────────┘
+ │ │ │
+ │ │ ▼
+ │ │ ┌───────────────────┐
+- │ reject │ │ EXECUTION_FAILED │
++ │ reject │ │ EXECUTION_FAILED │
+ ▼ │ └───────────────────┘
+ ┌─────────────┐ │
+ │ REJECTED │ │
+ └─────────────┘ │
++ │ ┌───────────────────┐
++ └────────▶ │ EXECUTING │
++ └───────────────────┘
++ │
++ ┌──────┴──────┐
++ ▼ ▼
++ ┌───────────┐ ┌─────────────┐
++ │ TIMED_OUT │ │ EXECUTED │
++ └───────────┘ └─────────────┘
+```
+
+**Rationale:** Some commands (`terraform destroy` on large infrastructure, database migrations) can run for minutes or hours. Without timeout handling, an agent calling `slb execute` with `--wait` could hang indefinitely. The `--background` option lets agents kick off execution and poll for completion, while `--timeout` prevents runaway commands. The EXECUTING state makes it clear a command is in progress, preventing duplicate execution attempts.
+
+---
+
+## Change 6: Fix Emergency Execute Interactive Requirement
+
+```diff
+ # Emergency execute (human override, bypasses approval)
+ slb emergency-execute "<command>" \
+ --reason "Why this can't wait" \
+ [--capture-rollback]
++ [--confirm "I_UNDERSTAND_THE_RISKS"] # Required for non-interactive
+
+- Requires: interactive confirmation
++ Requires: interactive confirmation OR --confirm flag
+ Logs: extensively for audit
+```
+
+**Rationale:** The document emphasizes "CLI-first for agents" but then requires interactive confirmation for emergency-execute. This contradiction means human operators can't script emergency procedures. Adding a `--confirm` flag with an explicit acknowledgment string maintains the friction (you can't accidentally trigger it) while enabling automation. The string `I_UNDERSTAND_THE_RISKS` is deliberately awkward to type, discouraging casual use.
+
+---
+
+## Change 7: Add Request Rate Limiting
+
+```diff
+ [daemon]
+ # Use file watcher instead of polling
+ use_file_watcher = true
+
+ # IPC socket path (for fast agent communication)
+ ipc_socket = "/tmp/slb-{project-hash}.sock"
+
+ # Log level
+ log_level = "info"
+
++[rate_limits]
++# Prevent request flooding (per session)
++max_pending_per_session = 5 # Max concurrent pending requests per agent
++max_requests_per_minute = 10 # Request creation rate limit per agent
++
++# When limit exceeded
++rate_limit_action = "reject" # "reject" | "queue" | "warn"
+```
+
+Add corresponding error handling:
+
+```diff
+ ### Edge Case 7: Filesystem Permissions
+ ...
+
++### Edge Case 8: Request Flooding
++
++**Scenario**: Agent gets stuck in loop, submits hundreds of requests.
++
++**Prevention**:
++1. Per-session rate limits (default: 10/min, 5 concurrent pending)
++2. When exceeded: immediate rejection with clear error
++3. Alert in TUI dashboard: "Session X hitting rate limits"
++4. Historical tracking for pattern detection
++
++**Recovery**:
++```bash
++slb session reset-limits --session-id <id> # Human can reset if legitimate
++```
+```
+
+**Rationale:** Without rate limiting, a malfunctioning or malicious agent could flood the review queue, creating a denial-of-service against the approval system. Other agents would be buried in review requests and might miss legitimate critical commands. Rate limiting per session prevents this while still allowing legitimate bursts of activity. The "queue" option is useful for batch operations where you want requests to eventually process.
+
+---
+
+## Change 8: Improve Pattern Matching for SQL Commands
+
+```diff
+ [patterns.critical]
+ # These ALWAYS require 2+ approvals from OTHER agents (not the requestor)
+ patterns = [
+ "^rm\\s+-rf\\s+/(?!tmp)", # rm -rf / (but not /tmp)
+ "^rm\\s+-rf\\s+~", # rm -rf ~
+ "DROP\\s+DATABASE", # SQL DROP DATABASE
+ "DROP\\s+SCHEMA",
+ "TRUNCATE\\s+TABLE",
+- "DELETE\\s+FROM\\s+\\w+\\s*;", # DELETE without WHERE (deletes ALL rows!)
+- "DELETE\\s+FROM(?!.*WHERE)", # DELETE without WHERE clause
++ # DELETE without WHERE - handles multiline, comments, varied whitespace
++ "DELETE\\s+FROM\\s+[\\w.`\"\\[\\]]+\\s*($|;|--|/\\*)", # DELETE FROM table; or DELETE FROM table-- or EOF
++ "DELETE\\s+FROM\\s+[\\w.`\"\\[\\]]+\\s+(?!WHERE|USING|RETURNING)", # DELETE FROM table <not WHERE>
+```
+
+And add a note:
+
+```diff
+ ### Pattern Syntax
+
+ Patterns use regex with these conventions:
+ - Case-insensitive by default
+ - `^` anchors to command start
+ - `\s+` for whitespace
+ - `(?!...)` for negative lookahead
+ - `.*` for any characters
+
++### SQL Pattern Considerations
++
++SQL commands are notoriously hard to pattern-match because:
++- They can span multiple lines
++- Comments (`--`, `/* */`) can appear anywhere
++- Table names can be quoted (`"table"`, `` `table` ``, `[table]`)
++- CTEs can precede DELETE (`WITH x AS (...) DELETE FROM...`)
++
++The built-in SQL patterns are best-effort. For production databases:
++1. Use database-level permissions as primary control
++2. Consider adding custom patterns for your specific ORM/query style
++3. Enable `require_sql_explain = true` in config for EXPLAIN output attachment
+```
+
+**Rationale:** The original DELETE patterns have false negatives. `DELETE FROM users ORDER BY created_at LIMIT 100` doesn't have WHERE but is probably intentional and safe. Meanwhile `DELETE FROM users` at end of line (no semicolon) might slip through. SQL pattern matching is fundamentally limited—the improved patterns catch more cases while acknowledging this is defense-in-depth, not a complete solution.
+
+---
+
+## Change 9: Add Session Persistence Across Restarts
+
+```diff
+ ### For Requesting Agent
+
+ ```bash
+ # 1. Start session (once per agent lifetime)
+-SESSION_JSON=$(slb session start \
++# Option A: Fresh session
++SESSION_JSON=$(slb session start \
+ --agent "GreenLake" \
+ --program "claude-code" \
+ --model "opus-4.5" \
+ --json)
+
+ SESSION_ID=$(echo "$SESSION_JSON" | jq -r '.sessionId')
++
++# Option B: Resume existing session (useful after agent restart)
++SESSION_JSON=$(slb session resume \
++ --agent "GreenLake" \
++ --json)
++
++# Returns existing active session or creates new one
++# Matches on agent name + program + project path
+```
+
+Add to session management:
+
+```diff
+ # Session management (for agents)
+ slb session start --agent <name> --program <prog> --model <model>
+ Returns: session ID and key
+ Alias: -a for --agent, -p for --program, -m for --model
+
++slb session resume --agent <name> [--program <prog>]
++ Returns: existing active session if found, otherwise creates new
++ Useful when agent restarts and wants to maintain session continuity
++
+ slb session end [--session-id <id>]
+ Alias: -s for --session-id (used globally for all commands)
+```
+
+**Rationale:** Agents crash. Terminals disconnect. When an agent restarts, it currently has to start a fresh session, orphaning any pending requests from the old session. The `resume` command lets agents reconnect to their existing session, maintaining continuity. This is especially important for long-running reviews—if a request is pending approval and the requesting agent crashes, it should be able to resume and execute once approved.
+
+---
+
+## Change 10: Add Bulk Operations for Efficiency
+
+```diff
+ ### Review Commands
+
+ ```bash
+ # Review a pending request (full details)
+ slb review <request-id>
+ Shows: command, justification, dry-run output, attachments
+
++# Review multiple requests at once
++slb review <id1> <id2> <id3> --json
++ Returns array of request details
++
+ # Approve a request
+ slb approve <request-id> \
+ --session-id <id> \
+ [--reason-response "..."] \
+ ...
+
++# Bulk approve multiple requests
++slb approve <id1> <id2> <id3> \
++ --session-id <id> \
++ --reason-response "Batch approval: verified all are build cleanup"
++
++# Bulk operations require all requests to be same tier (safety check)
++# Use --force-mixed-tiers to override
+```
+
+**Rationale:** When 30 agents are working in parallel, the review queue can build up. A reviewer agent checking periodically might find 15 pending requests. Approving them one-by-one is tedious and slow. Bulk operations let reviewers efficiently process batches of similar requests (e.g., all the `rm -rf ./build` commands from different agents). The same-tier requirement prevents accidentally bulk-approving a mix of CAUTION and CRITICAL requests.
+
+---
+
+## Change 11: Clarify Daemon Architecture
+
+```diff
+ ## Open Questions
+
+-1. **Single vs multiple binaries**: Should daemon be separate binary or `slb daemon start` spawns subprocess?
+-
+- *Recommendation*: Single binary, daemon runs as subprocess for simplicity.
++1. **Single vs multiple binaries**: Should daemon be separate binary or `slb daemon start` spawns subprocess?
++
++ *Decision*: Single binary with `slb daemon start` forking a background process.
++
++ **Implementation**:
++ ```go
++ // slb daemon start
++ if os.Getenv("SLB_DAEMON_MODE") != "1" {
++ // Fork ourselves with daemon flag
++ cmd := exec.Command(os.Args[0], "daemon", "start")
++ cmd.Env = append(os.Environ(), "SLB_DAEMON_MODE=1")
++ cmd.Start()
++ cmd.Process.Release() // Detach
++ fmt.Println("Daemon started, PID:", cmd.Process.Pid)
++ return
++ }
++ // Actually run daemon logic
++ runDaemon()
++ ```
++
++ **PID file**: `/tmp/slb-daemon-{user}.pid`
++ **Socket**: `/tmp/slb-{user}.sock`
++ **Logs**: `~/.slb/daemon.log`
+```
+
+**Rationale:** The "open question" should be resolved in the design doc. The single-binary-with-fork approach is cleaner than separate binaries (one thing to install, version, and update) while still providing proper daemonization. Specifying the PID file, socket, and log locations eliminates ambiguity for implementers.
+
+---
+
+## Change 12: Add Graceful Degradation When Daemon Is Down
+
+```diff
+ ### Edge Case 6: Request During Daemon Downtime
+
+ **Scenario**: Request file created but daemon not running.
+
+ **Solutions**:
+ 1. Daemon startup scans pending/ for stale requests
+ 2. Recalculate timeouts from creation time
+ 3. Warn if requests found that are past expiry
++
++**Graceful degradation** (when daemon is unavailable):
++
++Commands check daemon status before requiring it:
++```bash
++# slb request checks for daemon
++$ slb request "rm -rf ./build" ...
++Warning: slb daemon not running. Request created but notifications disabled.
++Reviewers must manually check: slb pending
++Start daemon with: slb daemon start
++
++# Request still works, just without:
++# - Desktop notifications
++# - Real-time TUI updates
++# - Agent Mail integration
++# - Fast IPC (falls back to file polling)
++```
++
++This allows slb to function in degraded mode rather than failing completely.
+```
+
+**Rationale:** A design that requires the daemon to be running creates a fragile dependency. If the daemon crashes mid-session, all agents would be blocked. Graceful degradation means the core request→approve→execute flow works via filesystem alone (the daemon just adds real-time features). This matches the Unix philosophy of doing one thing well and being resilient to component failures.
+
+---
+
+## Change 13: Improve the Quick Reference Card Organization
+
+```diff
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │ ⚡ SLB — Simultaneous Launch Button v1.0.0 │
+ │ Two-agent approval for dangerous commands │
+ ├─────────────────────────────────────────────────────────────────────────┤
+ │ │
+-│ START SESSION (once per agent): │
++│ 🔷 SETUP (once per agent session): │
+ │ slb session start -a <Name> -p claude-code -m opus-4.5 -j │
+ │ → Save session_id from JSON output │
+ │ │
+-│ BEFORE DANGEROUS COMMANDS: │
++│ 🔶 AS REQUESTOR (when you need to run something dangerous): │
+ │ slb check "rm -rf ./build" # Need approval? │
+ │ slb request "..." -s $SID \ │
+ │ --reason "..." --expected-effect "..." │
+ │ --goal "..." --safety "..." │
+ │ slb status $REQ --wait -j # Block til decision │
+ │ slb execute $REQ -j # Run if approved │
+ │ │
+-│ AS REVIEWER (check periodically!): │
++│ 🔷 AS REVIEWER (check every few minutes!): │
+ │ slb pending -j # List pending │
+ │ slb review <id> -j # Full details │
+ │ slb approve <id> -s $SID # Sign off │
+ │ slb reject <id> -s $SID --reason "..." # Block it │
+ │ │
+-│ ADD NEW DANGEROUS PATTERNS (agents can do this!): │
++│ 🔶 PATTERNS (make things safer - agents CAN add, CANNOT remove): │
+ │ slb patterns add --tier critical "^kubectl drain" --reason "..." │
+ │ │
+ ├─────────────────────────────────────────────────────────────────────────┤
+ │ TIERS: 🔴 CRITICAL (2 approvals) 🟠 DANGEROUS (1) 🟡 CAUTION (auto) │
+ │ FLAGS: -s/--session-id -j/--json -p/--project │
+ │ HUMAN: slb tui │
++│ HELP: slb <command> --help │
+ └─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Rationale:** The quick reference card is crucial—it's what agents see when they forget how to use slb. The improved version uses emoji section markers for visual scanning, makes role distinction clearer (requestor vs reviewer), emphasizes that reviewers should check periodically (critical for the system to work), and adds the `--help` hint. These small changes reduce cognitive load for agents parsing the reference.
+
+---
+
+## Change 14: Add Cross-Project Request Visibility Option
+
+```diff
+ [general]
+ # Minimum approvals required (can be overridden per-tier)
+ min_approvals = 2
+
++# Allow reviewers to see/approve requests from other projects
++# Useful when agents work across multiple repos
++cross_project_reviews = false
++
++# Projects that share a review pool (only if cross_project_reviews = true)
++# Empty = all projects visible to all reviewers
++review_pool = [] # e.g., ["/data/myapp", "/data/myapp-infra"]
+```
+
+And update pending command:
+
+```diff
+ # List pending requests
+-slb pending [--project <path>] [--all-projects]
++slb pending [--project <path>] [--all-projects] [--review-pool]
+ Returns: list of pending requests
++
++ --all-projects: Show from all projects (requires cross_project_reviews)
++ --review-pool: Show from configured review pool projects
+```
+
+**Rationale:** In real deployments, agents often work across related projects (e.g., application repo + infrastructure repo + deployment scripts). A CRITICAL command in the infra repo might need review from an agent working in the application repo. Cross-project visibility enables this while defaulting to isolated projects for security. The review pool concept lets you explicitly define which projects should share reviewers.
+
+---
+
+## Change 15: Document the Failure Mode When All Agents Are Same Model
+
+```diff
+ #### 3. "Different Model" Requirement is Hard to Enforce
+
+ **Original idea**: Optionally require approver to be different model (e.g., Claude can't approve Claude).
+
+ **Problem**: Self-reported model info has no cryptographic verification.
+
+ **Solution**:
+ - Accept this as advisory/honor-system rather than security guarantee
+ - Log model info for audit purposes
+ - The real value is the second perspective, not the model difference
+ - Optional strict mode where human must approve if same-model
++
++**When all agents are same model** (common scenario):
++
++If `require_different_model = true` but all active agents are Claude:
++1. Request enters "waiting_for_different_model" state
++2. After `different_model_timeout` (default: 5 min), escalates to human
++3. TUI shows: "⚠️ No different-model reviewers available"
++4. Desktop notification sent
++
++Alternatively, set `require_different_model = false` (default) and accept
++that same-model review still provides value through independent reasoning.
+```
+
+**Rationale:** Many users will run homogeneous agent fleets (all Claude, all GPT, etc.). The current design doesn't explain what happens when `require_different_model = true` but no different models exist. This addition makes the failure mode explicit and provides a path forward (escalation to human), preventing requests from hanging indefinitely.
+
+---
+
+These changes collectively make slb more robust, ergonomic, and production-ready while staying true to the core design philosophy. The most critical changes are #2 (replay prevention), #4 (sensitive data handling), and #5 (execution timeouts)—these address real operational risks. The ergonomic changes (#3, #9, #10) will significantly improve agent adoption by reducing friction for common cases.This is a well-thought-out proposal, Jeff. The core concept is solid—creating deliberate friction for destructive commands through peer review is exactly the right approach for multi-agent environments. I've identified several improvements ranging from critical fixes to ergonomic refinements. Here are my recommended changes:
+
+---
+
+## Change 1: Fix Go Version (Factual Error)
+
+```diff
+ ### Language & Runtime
+
+-**Primary**: Go 1.25 with Charmbracelet ecosystem
++**Primary**: Go 1.23+ with Charmbracelet ecosystem
+```
+
+**Rationale:** Go 1.25 doesn't exist. Current stable is 1.23 (released August 2024). This is a simple typo but would confuse anyone trying to set up the project. Go 1.23 has all the features you need (improved iterators, better generics support, etc.).
+
+---
+
+## Change 2: Add Command Fingerprinting to Prevent Replay Attacks
+
+```diff
+ -- Reviews (approvals and rejections)
+ CREATE TABLE reviews (
+ id TEXT PRIMARY KEY,
+ request_id TEXT NOT NULL REFERENCES requests(id),
+
+ -- Reviewer info
+ reviewer_session_id TEXT NOT NULL REFERENCES sessions(id),
+ reviewer_agent TEXT NOT NULL,
+ reviewer_model TEXT NOT NULL,
+
+ -- Decision
+ decision TEXT NOT NULL, -- 'approve' or 'reject'
+- signature TEXT NOT NULL, -- HMAC signature with session key
++ signature TEXT NOT NULL, -- HMAC signature: HMAC(session_key, request_id + decision + timestamp)
++ signature_timestamp TEXT NOT NULL, -- ISO 8601 timestamp included in signature
+
+ -- Structured response to requestor's justification
+```
+
+And add validation logic description:
+
+```diff
+ ### Trust Model
+
+ 1. **Agents are trusted but fallible**: They follow instructions but make mistakes
+ 2. **Honor system**: Agents are instructed to use slb, but can't be forced
+ 3. **Defense in depth**: slb is one layer; combine with file permissions, RBAC, etc.
+ 4. **Audit over prevention**: Focus on knowing what happened, not preventing everything
++
++### Signature Verification
++
++Review signatures include timestamps and are validated as follows:
++- Signature = HMAC-SHA256(session_key, request_id || decision || timestamp)
++- Timestamp must be within 5 minutes of current time (prevents replay)
++- Request ID binding prevents approval from being applied to different request
++- Session key binding ensures only the registered session can sign
+```
+
+**Rationale:** The current HMAC signature scheme doesn't include a timestamp or nonce, making it vulnerable to replay attacks. An attacker who captures a signed approval could replay it for a different (future) request with the same ID structure. Including the timestamp and validating freshness closes this gap without adding significant complexity. This also provides better audit trails since you know exactly when the review was signed.
+
+---
+
+## Change 3: Add Abbreviated Request Mode for Agents
+
+```diff
+ ### Request Commands
+
+ ```bash
+ # Submit a command for approval (primary command for agents)
+ slb request "<command>" \
+ --reason "Why I need to run this" \
+ --expected-effect "What will happen" \
+ --goal "What I'm trying to achieve" \
+ --safety "Why this is safe/reversible" \
+ [--attach-file <path>:<lines>] \
+ [--attach-context "<text>"] \
+ [--session-id <id>] \
+ [--wait] # Block until approved/rejected
+ [--timeout <seconds>]
+
+ Returns: request ID
++
++# Abbreviated request (combines all justification into single field)
++slb request "<command>" \
++ --justification "Combined explanation of why, what, and safety" \
++ [--session-id <id>] \
++ [--wait]
++
++ The system will auto-parse or store as-is. Useful for simple commands
++ where four separate fields is overkill.
+```
+
+**Rationale:** Requiring four separate justification fields for every dangerous command creates significant friction for agents. Many commands (like `rm -rf ./build`) don't need a dissertation—a single sentence suffices. The abbreviated mode lets agents provide a quick justification for straightforward cases while keeping the structured format available for complex CRITICAL operations. This reduces the "paperwork tax" that might lead agents to find ways around slb entirely.
+
+---
+
+## Change 4: Handle Commands with Sensitive Data
+
+```diff
+ ## Security Considerations
+
+ ### What slb IS
+
+ - **Peer review system**: Second opinion on destructive actions
+ - **Audit trail**: Complete record of what was proposed, approved, executed
+ - **Friction mechanism**: Forces deliberation before destruction
+ - **Learning tool**: Patterns can be refined based on outcomes
+
++### Sensitive Data Handling
++
++Commands may contain sensitive data (API keys, passwords, connection strings).
++slb provides options to handle this:
++
++```bash
++# Redact sensitive portions in logs/display (still executes full command)
++slb request 'mysql -p$DB_PASS -e "DROP TABLE users"' \
++ --redact '\$\w+' \ # Redacts env var references
++ --redact 'password=\S+' # Redacts password params
++```
++
++Redaction applies to:
++- TUI display
++- History browser
++- Git audit commits
++- Agent Mail notifications
++
++The **actual command** stored in the database is unredacted for execution,
++but marked with `contains_sensitive = true` flag. Access to raw commands
++requires explicit `--show-sensitive` flag.
++
++**Default redaction patterns** (always applied):
++- `-p<password>`, `--password=<value>`
++- `Bearer <token>`, `Authorization: <value>`
++- Environment variable expansions (`$VAR`, `${VAR}`)
+```
+
+Also add to the schema:
+
+```diff
+ -- Command requests
+ CREATE TABLE requests (
+ id TEXT PRIMARY KEY, -- UUID
+ project_path TEXT NOT NULL,
+ command TEXT NOT NULL,
++ command_display TEXT, -- Redacted version for display (NULL if no redaction)
++ contains_sensitive INTEGER NOT NULL DEFAULT 0,
+ risk_tier TEXT NOT NULL, -- 'critical', 'dangerous', 'caution'
+```
+
+**Rationale:** Real-world commands often contain secrets. Without redaction, slb becomes a liability—sensitive data ends up in SQLite, git commits, desktop notifications, and Agent Mail. This is both a security risk and a compliance problem. The redaction system keeps the audit trail useful while preventing credential exposure. Reviewers can still make informed decisions based on the command structure without seeing actual secrets.
+
+---
+
+## Change 5: Add Execution Timeout and Long-Running Command Handling
+
+```diff
+ ### Execution Commands
+
+ ```bash
+ # Execute an approved request
+-slb execute <request-id> [--session-id <id>]
++slb execute <request-id> [--session-id <id>] \
++ [--timeout <seconds>] # Kill command after timeout (default: 300)
++ [--background] # Don't wait for completion, return PID
+ Runs the command, captures output
+ Returns: exit code, stdout, stderr
+```
+
+And add to the state machine:
+
+```diff
+ ┌─────────────┐
+ │ CANCELLED │
+ └─────────────┘
+ ▲
+ │ cancel
+ │
+ ┌─────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+ │ CREATED │ ───▶ │ PENDING │───▶│ APPROVED │───▶│ EXECUTED │
+ └─────────┘ └─────────────┘ └─────────────┘ └─────────────┘
+ │ │ │
+ │ │ ▼
+ │ │ ┌───────────────────┐
+- │ reject │ │ EXECUTION_FAILED │
++ │ reject │ │ EXECUTION_FAILED │
+ ▼ │ └───────────────────┘
+ ┌─────────────┐ │
+ │ REJECTED │ │
+ └─────────────┘ │
++ │ ┌───────────────────┐
++ └────────▶ │ EXECUTING │
++ └───────────────────┘
++ │
++ ┌──────┴──────┐
++ ▼ ▼
++ ┌───────────┐ ┌─────────────┐
++ │ TIMED_OUT │ │ EXECUTED │
++ └───────────┘ └─────────────┘
+```
+
+**Rationale:** Some commands (`terraform destroy` on large infrastructure, database migrations) can run for minutes or hours. Without timeout handling, an agent calling `slb execute` with `--wait` could hang indefinitely. The `--background` option lets agents kick off execution and poll for completion, while `--timeout` prevents runaway commands. The EXECUTING state makes it clear a command is in progress, preventing duplicate execution attempts.
+
+---
+
+## Change 6: Fix Emergency Execute Interactive Requirement
+
+```diff
+ # Emergency execute (human override, bypasses approval)
+ slb emergency-execute "<command>" \
+ --reason "Why this can't wait" \
+ [--capture-rollback]
++ [--confirm "I_UNDERSTAND_THE_RISKS"] # Required for non-interactive
+
+- Requires: interactive confirmation
++ Requires: interactive confirmation OR --confirm flag
+ Logs: extensively for audit
+```
+
+**Rationale:** The document emphasizes "CLI-first for agents" but then requires interactive confirmation for emergency-execute. This contradiction means human operators can't script emergency procedures. Adding a `--confirm` flag with an explicit acknowledgment string maintains the friction (you can't accidentally trigger it) while enabling automation. The string `I_UNDERSTAND_THE_RISKS` is deliberately awkward to type, discouraging casual use.
+
+---
+
+## Change 7: Add Request Rate Limiting
+
+```diff
+ [daemon]
+ # Use file watcher instead of polling
+ use_file_watcher = true
+
+ # IPC socket path (for fast agent communication)
+ ipc_socket = "/tmp/slb-{project-hash}.sock"
+
+ # Log level
+ log_level = "info"
+
++[rate_limits]
++# Prevent request flooding (per session)
++max_pending_per_session = 5 # Max concurrent pending requests per agent
++max_requests_per_minute = 10 # Request creation rate limit per agent
++
++# When limit exceeded
++rate_limit_action = "reject" # "reject" | "queue" | "warn"
+```
+
+Add corresponding error handling:
+
+```diff
+ ### Edge Case 7: Filesystem Permissions
+ ...
+
++### Edge Case 8: Request Flooding
++
++**Scenario**: Agent gets stuck in loop, submits hundreds of requests.
++
++**Prevention**:
++1. Per-session rate limits (default: 10/min, 5 concurrent pending)
++2. When exceeded: immediate rejection with clear error
++3. Alert in TUI dashboard: "Session X hitting rate limits"
++4. Historical tracking for pattern detection
++
++**Recovery**:
++```bash
++slb session reset-limits --session-id <id> # Human can reset if legitimate
++```
+```
+
+**Rationale:** Without rate limiting, a malfunctioning or malicious agent could flood the review queue, creating a denial-of-service against the approval system. Other agents would be buried in review requests and might miss legitimate critical commands. Rate limiting per session prevents this while still allowing legitimate bursts of activity. The "queue" option is useful for batch operations where you want requests to eventually process.
+
+---
+
+## Change 8: Improve Pattern Matching for SQL Commands
+
+```diff
+ [patterns.critical]
+ # These ALWAYS require 2+ approvals from OTHER agents (not the requestor)
+ patterns = [
+ "^rm\\s+-rf\\s+/(?!tmp)", # rm -rf / (but not /tmp)
+ "^rm\\s+-rf\\s+~", # rm -rf ~
+ "DROP\\s+DATABASE", # SQL DROP DATABASE
+ "DROP\\s+SCHEMA",
+ "TRUNCATE\\s+TABLE",
+- "DELETE\\s+FROM\\s+\\w+\\s*;", # DELETE without WHERE (deletes ALL rows!)
+- "DELETE\\s+FROM(?!.*WHERE)", # DELETE without WHERE clause
++ # DELETE without WHERE - handles multiline, comments, varied whitespace
++ "DELETE\\s+FROM\\s+[\\w.`\"\\[\\]]+\\s*($|;|--|/\\*)", # DELETE FROM table; or DELETE FROM table-- or EOF
++ "DELETE\\s+FROM\\s+[\\w.`\"\\[\\]]+\\s+(?!WHERE|USING|RETURNING)", # DELETE FROM table <not WHERE>
+```
+
+And add a note:
+
+```diff
+ ### Pattern Syntax
+
+ Patterns use regex with these conventions:
+ - Case-insensitive by default
+ - `^` anchors to command start
+ - `\s+` for whitespace
+ - `(?!...)` for negative lookahead
+ - `.*` for any characters
+
++### SQL Pattern Considerations
++
++SQL commands are notoriously hard to pattern-match because:
++- They can span multiple lines
++- Comments (`--`, `/* */`) can appear anywhere
++- Table names can be quoted (`"table"`, `` `table` ``, `[table]`)
++- CTEs can precede DELETE (`WITH x AS (...) DELETE FROM...`)
++
++The built-in SQL patterns are best-effort. For production databases:
++1. Use database-level permissions as primary control
++2. Consider adding custom patterns for your specific ORM/query style
++3. Enable `require_sql_explain = true` in config for EXPLAIN output attachment
+```
+
+**Rationale:** The original DELETE patterns have false negatives. `DELETE FROM users ORDER BY created_at LIMIT 100` doesn't have WHERE but is probably intentional and safe. Meanwhile `DELETE FROM users` at end of line (no semicolon) might slip through. SQL pattern matching is fundamentally limited—the improved patterns catch more cases while acknowledging this is defense-in-depth, not a complete solution.
+
+---
+
+## Change 9: Add Session Persistence Across Restarts
+
+```diff
+ ### For Requesting Agent
+
+ ```bash
+ # 1. Start session (once per agent lifetime)
+-SESSION_JSON=$(slb session start \
++# Option A: Fresh session
++SESSION_JSON=$(slb session start \
+ --agent "GreenLake" \
+ --program "claude-code" \
+ --model "opus-4.5" \
+ --json)
+
+ SESSION_ID=$(echo "$SESSION_JSON" | jq -r '.sessionId')
++
++# Option B: Resume existing session (useful after agent restart)
++SESSION_JSON=$(slb session resume \
++ --agent "GreenLake" \
++ --json)
++
++# Returns existing active session or creates new one
++# Matches on agent name + program + project path
+```
+
+Add to session management:
+
+```diff
+ # Session management (for agents)
+ slb session start --agent <name> --program <prog> --model <model>
+ Returns: session ID and key
+ Alias: -a for --agent, -p for --program, -m for --model
+
++slb session resume --agent <name> [--program <prog>]
++ Returns: existing active session if found, otherwise creates new
++ Useful when agent restarts and wants to maintain session continuity
++
+ slb session end [--session-id <id>]
+ Alias: -s for --session-id (used globally for all commands)
+```
+
+**Rationale:** Agents crash. Terminals disconnect. When an agent restarts, it currently has to start a fresh session, orphaning any pending requests from the old session. The `resume` command lets agents reconnect to their existing session, maintaining continuity. This is especially important for long-running reviews—if a request is pending approval and the requesting agent crashes, it should be able to resume and execute once approved.
+
+---
+
+## Change 10: Add Bulk Operations for Efficiency
+
+```diff
+ ### Review Commands
+
+ ```bash
+ # Review a pending request (full details)
+ slb review <request-id>
+ Shows: command, justification, dry-run output, attachments
+
++# Review multiple requests at once
++slb review <id1> <id2> <id3> --json
++ Returns array of request details
++
+ # Approve a request
+ slb approve <request-id> \
+ --session-id <id> \
+ [--reason-response "..."] \
+ ...
+
++# Bulk approve multiple requests
++slb approve <id1> <id2> <id3> \
++ --session-id <id> \
++ --reason-response "Batch approval: verified all are build cleanup"
++
++# Bulk operations require all requests to be same tier (safety check)
++# Use --force-mixed-tiers to override
+```
+
+**Rationale:** When 30 agents are working in parallel, the review queue can build up. A reviewer agent checking periodically might find 15 pending requests. Approving them one-by-one is tedious and slow. Bulk operations let reviewers efficiently process batches of similar requests (e.g., all the `rm -rf ./build` commands from different agents). The same-tier requirement prevents accidentally bulk-approving a mix of CAUTION and CRITICAL requests.
+
+---
+
+## Change 11: Clarify Daemon Architecture
+
+```diff
+ ## Open Questions
+
+-1. **Single vs multiple binaries**: Should daemon be separate binary or `slb daemon start` spawns subprocess?
+-
+- *Recommendation*: Single binary, daemon runs as subprocess for simplicity.
++1. **Single vs multiple binaries**: Should daemon be separate binary or `slb daemon start` spawns subprocess?
++
++ *Decision*: Single binary with `slb daemon start` forking a background process.
++
++ **Implementation**:
++ ```go
++ // slb daemon start
++ if os.Getenv("SLB_DAEMON_MODE") != "1" {
++ // Fork ourselves with daemon flag
++ cmd := exec.Command(os.Args[0], "daemon", "start")
++ cmd.Env = append(os.Environ(), "SLB_DAEMON_MODE=1")
++ cmd.Start()
++ cmd.Process.Release() // Detach
++ fmt.Println("Daemon started, PID:", cmd.Process.Pid)
++ return
++ }
++ // Actually run daemon logic
++ runDaemon()
++ ```
++
++ **PID file**: `/tmp/slb-daemon-{user}.pid`
++ **Socket**: `/tmp/slb-{user}.sock`
++ **Logs**: `~/.slb/daemon.log`
+```
+
+**Rationale:** The "open question" should be resolved in the design doc. The single-binary-with-fork approach is cleaner than separate binaries (one thing to install, version, and update) while still providing proper daemonization. Specifying the PID file, socket, and log locations eliminates ambiguity for implementers.
+
+---
+
+## Change 12: Add Graceful Degradation When Daemon Is Down
+
+```diff
+ ### Edge Case 6: Request During Daemon Downtime
+
+ **Scenario**: Request file created but daemon not running.
+
+ **Solutions**:
+ 1. Daemon startup scans pending/ for stale requests
+ 2. Recalculate timeouts from creation time
+ 3. Warn if requests found that are past expiry
++
++**Graceful degradation** (when daemon is unavailable):
++
++Commands check daemon status before requiring it:
++```bash
++# slb request checks for daemon
++$ slb request "rm -rf ./build" ...
++Warning: slb daemon not running. Request created but notifications disabled.
++Reviewers must manually check: slb pending
++Start daemon with: slb daemon start
++
++# Request still works, just without:
++# - Desktop notifications
++# - Real-time TUI updates
++# - Agent Mail integration
++# - Fast IPC (falls back to file polling)
++```
++
++This allows slb to function in degraded mode rather than failing completely.
+```
+
+**Rationale:** A design that requires the daemon to be running creates a fragile dependency. If the daemon crashes mid-session, all agents would be blocked. Graceful degradation means the core request→approve→execute flow works via filesystem alone (the daemon just adds real-time features). This matches the Unix philosophy of doing one thing well and being resilient to component failures.
+
+---
+
+## Change 13: Improve the Quick Reference Card Organization
+
+```diff
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │ ⚡ SLB — Simultaneous Launch Button v1.0.0 │
+ │ Two-agent approval for dangerous commands │
+ ├─────────────────────────────────────────────────────────────────────────┤
+ │ │
+-│ START SESSION (once per agent): │
++│ 🔷 SETUP (once per agent session): │
+ │ slb session start -a <Name> -p claude-code -m opus-4.5 -j │
+ │ → Save session_id from JSON output │
+ │ │
+-│ BEFORE DANGEROUS COMMANDS: │
++│ 🔶 AS REQUESTOR (when you need to run something dangerous): │
+ │ slb check "rm -rf ./build" # Need approval? │
+ │ slb request "..." -s $SID \ │
+ │ --reason "..." --expected-effect "..." │
+ │ --goal "..." --safety "..." │
+ │ slb status $REQ --wait -j # Block til decision │
+ │ slb execute $REQ -j # Run if approved │
+ │ │
+-│ AS REVIEWER (check periodically!): │
++│ 🔷 AS REVIEWER (check every few minutes!): │
+ │ slb pending -j # List pending │
+ │ slb review <id> -j # Full details │
+ │ slb approve <id> -s $SID # Sign off │
+ │ slb reject <id> -s $SID --reason "..." # Block it │
+ │ │
+-│ ADD NEW DANGEROUS PATTERNS (agents can do this!): │
++│ 🔶 PATTERNS (make things safer - agents CAN add, CANNOT remove): │
+ │ slb patterns add --tier critical "^kubectl drain" --reason "..." │
+ │ │
+ ├─────────────────────────────────────────────────────────────────────────┤
+ │ TIERS: 🔴 CRITICAL (2 approvals) 🟠 DANGEROUS (1) 🟡 CAUTION (auto) │
+ │ FLAGS: -s/--session-id -j/--json -p/--project │
+ │ HUMAN: slb tui │
++│ HELP: slb <command> --help │
+ └─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Rationale:** The quick reference card is crucial—it's what agents see when they forget how to use slb. The improved version uses emoji section markers for visual scanning, makes role distinction clearer (requestor vs reviewer), emphasizes that reviewers should check periodically (critical for the system to work), and adds the `--help` hint. These small changes reduce cognitive load for agents parsing the reference.
+
+---
+
+## Change 14: Add Cross-Project Request Visibility Option
+
+```diff
+ [general]
+ # Minimum approvals required (can be overridden per-tier)
+ min_approvals = 2
+
++# Allow reviewers to see/approve requests from other projects
++# Useful when agents work across multiple repos
++cross_project_reviews = false
++
++# Projects that share a review pool (only if cross_project_reviews = true)
++# Empty = all projects visible to all reviewers
++review_pool = [] # e.g., ["/data/myapp", "/data/myapp-infra"]
+```
+
+And update pending command:
+
+```diff
+ # List pending requests
+-slb pending [--project <path>] [--all-projects]
++slb pending [--project <path>] [--all-projects] [--review-pool]
+ Returns: list of pending requests
++
++ --all-projects: Show from all projects (requires cross_project_reviews)
++ --review-pool: Show from configured review pool projects
+```
+
+**Rationale:** In real deployments, agents often work across related projects (e.g., application repo + infrastructure repo + deployment scripts). A CRITICAL command in the infra repo might need review from an agent working in the application repo. Cross-project visibility enables this while defaulting to isolated projects for security. The review pool concept lets you explicitly define which projects should share reviewers.
+
+---
+
+## Change 15: Document the Failure Mode When All Agents Are Same Model
+
+```diff
+ #### 3. "Different Model" Requirement is Hard to Enforce
+
+ **Original idea**: Optionally require approver to be different model (e.g., Claude can't approve Claude).
+
+ **Problem**: Self-reported model info has no cryptographic verification.
+
+ **Solution**:
+ - Accept this as advisory/honor-system rather than security guarantee
+ - Log model info for audit purposes
+ - The real value is the second perspective, not the model difference
+ - Optional strict mode where human must approve if same-model
++
++**When all agents are same model** (common scenario):
++
++If `require_different_model = true` but all active agents are Claude:
++1. Request enters "waiting_for_different_model" state
++2. After `different_model_timeout` (default: 5 min), escalates to human
++3. TUI shows: "⚠️ No different-model reviewers available"
++4. Desktop notification sent
++
++Alternatively, set `require_different_model = false` (default) and accept
++that same-model review still provides value through independent reasoning.
+```
+
+**Rationale:** Many users will run homogeneous agent fleets (all Claude, all GPT, etc.). The current design doesn't explain what happens when `require_different_model = true` but no different models exist. This addition makes the failure mode explicit and provides a path forward (escalation to human), preventing requests from hanging indefinitely.
+
+---
+
+These changes collectively make slb more robust, ergonomic, and production-ready while staying true to the core design philosophy. The most critical changes are #2 (replay prevention), #4 (sensitive data handling), and #5 (execution timeouts)—these address real operational risks. The ergonomic changes (#3, #9, #10) will significantly improve agent adoption by reducing friction for common cases.
+
+
+______________________
+
+## Suggestions from Gemini3 Deep-Think in Web App:
+
+I have carefully reviewed your `slb` proposal. It is a robust architectural plan that correctly identifies the need for a "Two-Person Rule" in agentic workflows. The choice of the Charmbracelet stack (Go) and the separation of ephemeral state (JSON) from persistent history (SQLite) is excellent.
+
+However, there are **three critical architectural flaws** in the current design that will cause it to fail in real-world agent deployments:
+
+1. **Execution Environment Mismatch**: The plan implies the *Daemon* executes the command. This is dangerous. The Daemon (running in the background) does not share the Agent's shell environment (AWS profiles, `virtualenv` activations, `SSH_AUTH_SOCK`, `KUBECONFIG`).
+2. **Agent State Management**: Asking an LLM to manage a 4-step loop (`check` → `request` → `poll` → `execute`) drastically increases the chance of "giving up," hallucinating protocols, or losing context.
+3. **Path Ambiguity**: Regex matching on raw command strings is insecure. `rm -rf ./build` is safe in `/app` but catastrophic in `/`.
+
+Here are the specific, git-diff style changes to fix these issues and make the system truly production-ready.
+
+### Change 1: The Atomic `slb run` Wrapper
+
+**Rationale:**
+Agents struggle with multi-step async state machines. The current flow requires them to parse JSON, extract IDs, and poll endpoints.
+**The Fix:** Introduce `slb run`. This is a "porcelain" command that handles the "plumbing" atomically. It checks patterns; if safe, it runs immediately. If dangerous, it submits a request, **blocks** the process (displaying a spinner to stderr), and executes upon approval. This reduces the Agent's system prompt instruction to a single line: *"Use `slb run <cmd>` for everything."*
+
+````diff
+<<<<
+# Request Commands
+```bash
+# Submit a command for approval (primary command for agents)
+slb request "<command>" \
+ --reason "Why I need to run this" \
+ --expected-effect "What will happen" \
+====
+# Atomic Execution (Primary Agent Command)
+```bash
+# "Do it safely" — Checks, Requests, Waits, and Executes in one blocking call.
+slb run "<command>" \
+ --reason "..." \
+ --expected-effect "..." \
+ [--timeout 300] \
+ [--yield] # Allow this agent to review others while waiting (prevents deadlock)
+
+# Behavior:
+# 1. Checks patterns. If SAFE: Executes immediately (pass-through).
+# 2. If DANGEROUS: 
+# - Creates request automatically.
+# - Blocks process (streaming status to stderr).
+# - If Approved: Executes immediately.
+# - If Rejected/Timeout: Exits with code 1 and JSON error.
+````
+
+# Plumbing Commands (Manual Flow)
+
+```bash
+# Submit a command for approval
+slb request "<command>" \
+ --reason "Why I need to run this" \
+ --expected-effect "What will happen" \
+>>>>
+```
+
+### Change 2: Execution Inversion (Client-Side Execution)
+
+**Rationale:**
+The proposal implies the Daemon executes the command (`internal/daemon/executor.go`). This breaks developer workflows because the Daemon lacks the Agent's specific environment variables and shell context.
+**The Fix:** The **Client** (`slb run` running in the agent's shell) must execute the `exec` syscall *after* receiving cryptographic approval from the Daemon. The Daemon acts as the Notary, not the Executor.
+
+```diff
+<<<<
+│ ├── daemon/
+│ │ ├── daemon.go # Daemon lifecycle management
+│ │ ├── watcher.go # fsnotify-based file watcher
+│ │ ├── executor.go # Command execution with capture
+│ │ ├── ipc.go # Unix socket server
+====
+│ ├── daemon/
+│ │ ├── daemon.go # Daemon lifecycle management
+│ │ ├── watcher.go # fsnotify-based file watcher
+│ │ ├── verifier.go # Verifies approvals & signatures
+│ │ ├── ipc.go # Unix socket server
+>>>>
+```
+
+```diff
+<<<<
+# Execute an approved request
+slb execute <request-id> [--session-id <id>]
+ Runs the command, captures output
+ Returns: exit code, stdout, stderr
+====
+# Execute an approved request
+slb execute <request-id> [--session-id <id>]
+ 1. Verifies request is APPROVED in DB.
+ 2. Verifies reviewer signatures.
+ 3. Client (current process) executes command LOCALLY.
+ - Inherits current Shell Env (AWS_*, PATH, etc).
+ - Inherits current TTY (if interactive).
+ 4. Streams stdout/stderr to terminal AND logs to file.
+ 5. Reports exit code back to Daemon to close request.
+>>>>
+```
+
+### Change 3: Canonical Path Resolution
+
+**Rationale:**
+Regex matching on raw strings is brittle. `rm -rf *` is context-dependent. A command like `cd /etc && rm -rf *` would bypass a pattern checking for `rm -rf /etc`.
+**The Fix:** The request must capture the **Current Working Directory (CWD)**, and the system must resolve all paths to absolute paths *before* applying risk patterns.
+
+```diff
+<<<<
+type Request struct {
+ ID string `json:"id"`
+ ProjectPath string `json:"project_path"`
+ Command string `json:"command"`
+ RiskTier RiskTier `json:"risk_tier"`
+====
+type Request struct {
+ ID string `json:"id"`
+ ProjectPath string `json:"project_path"`
+ WorkingDir string `json:"working_dir"` // Capture CWD
+ Command string `json:"command"`
+ ResolvedCmd string `json:"resolved_cmd"` // Expanded absolute paths
+ RiskTier RiskTier `json:"risk_tier"`
+>>>>
+```
+
+````diff
+<<<<
+### Path-Aware Patterns
+Some patterns should consider paths:
+```toml
+# More dangerous if path is outside project
+[patterns.critical.context]
+pattern = "^rm\\s+-rf"
+require_path_check = true
+dangerous_paths = ["/", "~", "/etc", "/var", "/usr"]
+````
+
+\====
+
+### Path-Aware Patterns
+
+Patterns run against the **Resolved Command**:
+
+1. `slb` detects CWD at request time.
+2. Expands relative paths (`./`, `../`) to absolute paths.
+3. Matches patterns against the fully resolved string.
+
+<!-- end list -->
+
+```toml
+[patterns.critical.context]
+pattern = "^rm\\s+-rf"
+require_path_check = true
+# Checks against the RESOLVED absolute path, regardless of how command was typed
+dangerous_prefixes = ["/", "/etc", "/var", "/usr"]
+safe_prefixes = ["${PROJECT_ROOT}/tmp", "${PROJECT_ROOT}/build"]
+```
+
+> > > > 
+
+````
+
+### Change 4: Stream Logs to Files (Database Health)
+**Rationale:**
+Storing execution output in SQLite `TEXT` columns is a performance killer. A verbose build command might output 100MB of text, bloating the database and locking it during writes.
+**The Fix:** Stream output to flat files in `.slb/logs/` and store only the reference path in the DB.
+
+```diff
+<<<<
+ executed_at TEXT,
+ execution_output TEXT,
+ execution_exit_code INTEGER,
+ -- Rollback info
+====
+ executed_at TEXT,
+ execution_log_path TEXT, -- Path to .slb/logs/req-{uuid}.log
+ execution_exit_code INTEGER,
+ -- Rollback info
+>>>>
+````
+
+### Change 5: Input via Stdin (Solving "Quoting Hell")
+
+**Rationale:**
+Asking an agent to construct a CLI command with complex nested quotes for the `--reason` flag is the \#1 cause of tool use failure (e.g., trying to include a multi-line JSON snippet or error log in the reason).
+**The Fix:** Allow passing rich metadata via Stdin or a file.
+
+```diff
+<<<<
+slb request "<command>" \
+ --reason "Why I need to run this" \
+ --expected-effect "What will happen" \
+ --goal "What I'm trying to achieve" \
+ --safety "Why this is safe/reversible" \
+ [--attach-file <path>:<lines>] \
+=======
+slb request "<command>" \
+ [--meta-file request.json] \ # Safer for agents to write JSON to a file first
+ [--from-stdin] \ # Or pipe JSON into stdin
+ --reason "..." \ # Flags still supported for simple cases
+>>>>
+```
+
+### Change 6: Dynamic Quorum & Deadlock Prevention
+
+**Rationale:**
+In a 2-agent scenario (1 requestor, 1 reviewer), the "2 Approvals" requirement for Critical commands creates a deadlock if the requestor cannot self-approve. Furthermore, if both agents block waiting for approval on different tasks, the system freezes.
+**The Fix:**
+
+1. **Dynamic Quorum:** Adjust requirements based on active session count.
+2. **Yielding:** Allow a waiting agent to process reviews.
+
+<!-- end list -->
+
+```diff
+<<<<
+[patterns.critical]
+# These ALWAYS require 2+ approvals from OTHER agents (not the requestor)
+# So for CRITICAL: requestor + 2 reviewers = minimum 3 agents involved
+min_approvals = 2
+====
+[patterns.critical]
+# Default approvals required
+min_approvals = 2
+# Dynamic Quorum: If true, and active_sessions < (min_approvals + 1),
+# allow execution if ALL other active agents approve.
+dynamic_quorum = true
+>>>>
+```
+
+### Change 7: TCP Support for Docker Agents
+
+**Rationale:**
+Agents often run in Docker containers (DevContainers). They cannot easily access Unix Domain Sockets on the host filesystem. This limits `slb`'s utility in modern containerized dev environments.
+**The Fix:** Add optional TCP listener support.
+
+```diff
+<<<<
+[daemon]
+# Use file watcher instead of polling
+use_file_watcher = true
+# IPC socket path (for fast agent communication)
+ipc_socket = "/tmp/slb-{project-hash}.sock"
+====
+[daemon]
+# IPC socket (Host)
+ipc_socket = "/tmp/slb-{project-hash}.sock"
+# TCP Listener (Optional - for Docker/Remote agents)
+# Agents connect via SLB_HOST=host.docker.internal:3333
+tcp_addr = "127.0.0.1:3333"
+>>>>
+```
+
+________________________
+
+
+Suggestions from GPT 5.2 Pro with Extending Thinking in Web App:
+
+
