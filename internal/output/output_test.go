@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func captureStdout(t *testing.T, fn func()) string {
@@ -93,8 +95,42 @@ func TestWriter_Write_JSON(t *testing.T) {
 	}
 }
 
+func TestWriter_Write_YAML(t *testing.T) {
+	out := captureStdout(t, func() {
+		type payload struct {
+			A int `json:"a"`
+		}
+		w := New(FormatYAML)
+		if err := w.Write(payload{A: 1}); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	})
+
+	var decoded map[string]any
+	if err := yaml.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v; out=%q", err, out)
+	}
+
+	switch v := decoded["a"].(type) {
+	case int:
+		if v != 1 {
+			t.Fatalf("unexpected payload: %#v", decoded)
+		}
+	case float64:
+		if v != 1 {
+			t.Fatalf("unexpected payload: %#v", decoded)
+		}
+	case string:
+		if v != "1" {
+			t.Fatalf("unexpected payload: %#v", decoded)
+		}
+	default:
+		t.Fatalf("unexpected payload: %#v", decoded)
+	}
+}
+
 func TestWriter_Write_UnsupportedFormat(t *testing.T) {
-	w := New(FormatYAML)
+	w := New(Format("bogus"))
 	if err := w.Write("x"); err == nil {
 		t.Fatalf("expected error")
 	}

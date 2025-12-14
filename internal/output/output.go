@@ -3,9 +3,13 @@
 package output
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // Format represents the output format.
@@ -38,6 +42,8 @@ func (w *Writer) Write(data any) error {
 	switch w.format {
 	case FormatJSON:
 		return OutputJSON(data)
+	case FormatYAML:
+		return OutputYAML(data)
 	case FormatText:
 		// Human-friendly output goes to stderr to keep stdout clean for piping.
 		_, err := fmt.Fprintf(w.errOut, "%v\n", data)
@@ -62,7 +68,7 @@ func (w *Writer) WriteNDJSON(data any) error {
 
 // Success outputs a success message.
 func (w *Writer) Success(msg string) {
-	if w.format == FormatJSON {
+	if w.format == FormatJSON || w.format == FormatYAML {
 		_ = w.Write(map[string]any{"status": "success", "message": msg})
 	} else {
 		fmt.Fprintf(w.errOut, "✓ %s\n", msg)
@@ -73,7 +79,46 @@ func (w *Writer) Success(msg string) {
 func (w *Writer) Error(err error) {
 	if w.format == FormatJSON {
 		_ = OutputJSONError(err, 1)
+	} else if w.format == FormatYAML {
+		_ = OutputYAML(ErrorPayload{
+			Error:   "error",
+			Message: err.Error(),
+			Details: map[string]any{"code": 1},
+		})
 	} else {
 		fmt.Fprintf(w.errOut, "✗ %s\n", err.Error())
 	}
+}
+
+func normalizeForYAML(v any) (any, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+
+	var normalized any
+	if err := dec.Decode(&normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+// OutputYAML writes YAML to stdout, preserving JSON tags/field names by converting via JSON first.
+func OutputYAML(v any) error {
+	normalized, err := normalizeForYAML(v)
+	if err != nil {
+		return err
+	}
+	b, err := yaml.Marshal(normalized)
+	if err != nil {
+		return err
+	}
+	if len(b) == 0 || b[len(b)-1] != '\n' {
+		b = append(b, '\n')
+	}
+	_, err = os.Stdout.Write(b)
+	return err
 }
