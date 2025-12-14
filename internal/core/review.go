@@ -18,6 +18,7 @@ var (
 	ErrRequireDiffModel  = errors.New("different model required for approval")
 	ErrInvalidDecision   = errors.New("invalid decision (must be approve or reject)")
 	ErrMissingSessionKey = errors.New("session key required for signature")
+	ErrSessionKeyMismatch = errors.New("session key does not match session")
 )
 
 // ConflictResolution specifies how to handle conflicting reviews.
@@ -132,6 +133,9 @@ func (rs *ReviewService) SubmitReview(opts ReviewOptions) (*ReviewResult, error)
 	}
 	if !session.IsActive() {
 		return nil, ErrSessionInactive
+	}
+	if opts.SessionKey != session.SessionKey {
+		return nil, ErrSessionKeyMismatch
 	}
 
 	// Step 2: Get and validate request
