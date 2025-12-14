@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -128,6 +129,45 @@ func (db *DB) GetRequestWithReviews(id string) (*Request, []*Review, error) {
 // ListPendingRequests returns all pending requests for a project.
 func (db *DB) ListPendingRequests(projectPath string) ([]*Request, error) {
 	return db.ListRequestsByStatus(StatusPending, projectPath)
+}
+
+// ListPendingRequestsByProjects returns pending requests for a set of projects.
+func (db *DB) ListPendingRequestsByProjects(projectPaths []string) ([]*Request, error) {
+	if len(projectPaths) == 0 {
+		return []*Request{}, nil
+	}
+	placeholders := make([]string, 0, len(projectPaths))
+	args := make([]any, 0, len(projectPaths)+1)
+	for _, p := range projectPaths {
+		placeholders = append(placeholders, "?")
+		args = append(args, p)
+	}
+	args = append(args, string(StatusPending))
+
+	query := fmt.Sprintf(`
+		SELECT id, project_path,
+			command_raw, command_argv_json, command_cwd, command_shell, command_hash,
+			command_display_redacted, command_contains_sensitive,
+			risk_tier, requestor_session_id, requestor_agent, requestor_model,
+			justification_reason, justification_expected_effect, justification_goal, justification_safety_argument,
+			dry_run_command, dry_run_output, attachments_json,
+			status, min_approvals, require_different_model,
+			execution_log_path, execution_exit_code, execution_duration_ms,
+			execution_executed_at, execution_executed_by_session_id, execution_executed_by_agent, execution_executed_by_model,
+			rollback_path, rollback_rolled_back_at,
+			created_at, resolved_at, expires_at, approval_expires_at
+		FROM requests
+		WHERE project_path IN (%s) AND status = ?
+		ORDER BY created_at DESC
+	`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying pending requests by projects: %w", err)
+	}
+	defer rows.Close()
+
+	return scanRequests(rows)
 }
 
 // ListPendingRequestsAllProjects returns all pending requests across all projects.
@@ -397,17 +437,17 @@ func ComputeCommandHash(cmd CommandSpec) string {
 func scanRequest(row *sql.Row) (*Request, error) {
 	r := &Request{}
 	var (
-		argvJSON, attachmentsJSON                         sql.NullString
-		cmdDisplayRedacted                                sql.NullString
-		justExpEffect, justGoal, justSafety               sql.NullString
-		dryRunCmd, dryRunOutput                           sql.NullString
-		execLogPath, execExitCode, execDurationMs         sql.NullString
-		execAt, execBySessionID, execByAgent, execByModel sql.NullString
-		rollbackPath, rollbackAt                          sql.NullString
+		argvJSON, attachmentsJSON                           sql.NullString
+		cmdDisplayRedacted                                  sql.NullString
+		justExpEffect, justGoal, justSafety                 sql.NullString
+		dryRunCmd, dryRunOutput                             sql.NullString
+		execLogPath, execExitCode, execDurationMs           sql.NullString
+		execAt, execBySessionID, execByAgent, execByModel   sql.NullString
+		rollbackPath, rollbackAt                            sql.NullString
 		createdAt, resolvedAt, expiresAt, approvalExpiresAt sql.NullString
-		riskTier, status                                  string
-		minApprovals                                      int
-		requireDiffModel, cmdShell, containsSensitive     int
+		riskTier, status                                    string
+		minApprovals                                        int
+		requireDiffModel, cmdShell, containsSensitive       int
 	)
 
 	err := row.Scan(
@@ -530,17 +570,17 @@ func scanRequests(rows *sql.Rows) ([]*Request, error) {
 	for rows.Next() {
 		r := &Request{}
 		var (
-			argvJSON, attachmentsJSON                                                                                           sql.NullString
-			cmdDisplayRedacted                                                                                                  sql.NullString
-			justExpEffect, justGoal, justSafety                                                                                 sql.NullString
-			dryRunCmd, dryRunOutput                                                                                             sql.NullString
-			execLogPath, execExitCode, execDurationMs                                                                           sql.NullString
-			execAt, execBySessionID, execByAgent, execByModel                                                                   sql.NullString
-			rollbackPath, rollbackAt                                                                                            sql.NullString
-			createdAt, resolvedAt, expiresAt, approvalExpiresAt                                                                 sql.NullString
-			riskTier, status                                                                                                    string
-			minApprovals                                                                                                        int
-			requireDiffModel, cmdShell, containsSensitive                                                                       int
+			argvJSON, attachmentsJSON                           sql.NullString
+			cmdDisplayRedacted                                  sql.NullString
+			justExpEffect, justGoal, justSafety                 sql.NullString
+			dryRunCmd, dryRunOutput                             sql.NullString
+			execLogPath, execExitCode, execDurationMs           sql.NullString
+			execAt, execBySessionID, execByAgent, execByModel   sql.NullString
+			rollbackPath, rollbackAt                            sql.NullString
+			createdAt, resolvedAt, expiresAt, approvalExpiresAt sql.NullString
+			riskTier, status                                    string
+			minApprovals                                        int
+			requireDiffModel, cmdShell, containsSensitive       int
 		)
 
 		err := rows.Scan(

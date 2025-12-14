@@ -224,6 +224,78 @@ func (db *DB) FindStaleSessions(threshold time.Duration) ([]*Session, error) {
 	return scanSessions(rows)
 }
 
+// ListActiveSessionsWithDifferentModel returns active sessions in a project
+// that have a different model than the specified one.
+func (db *DB) ListActiveSessionsWithDifferentModel(projectPath, excludeModel string) ([]*Session, error) {
+	rows, err := db.Query(`
+		SELECT id, agent_name, program, model, project_path, session_key, started_at, last_active_at, ended_at
+		FROM sessions
+		WHERE project_path = ? AND ended_at IS NULL AND model != ?
+		ORDER BY last_active_at DESC
+	`, projectPath, excludeModel)
+	if err != nil {
+		return nil, fmt.Errorf("querying sessions with different model: %w", err)
+	}
+	defer rows.Close()
+
+	return scanSessions(rows)
+}
+
+// HasActiveSessionWithDifferentModel checks if there's any active session
+// in the project with a different model.
+func (db *DB) HasActiveSessionWithDifferentModel(projectPath, excludeModel string) (bool, error) {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM sessions
+		WHERE project_path = ? AND ended_at IS NULL AND model != ?
+	`, projectPath, excludeModel).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("checking different model sessions: %w", err)
+	}
+	return count > 0, nil
+}
+
+// DifferentModelStatus provides information about available different-model reviewers.
+type DifferentModelStatus struct {
+	// HasDifferentModel indicates if any active session has a different model.
+	HasDifferentModel bool `json:"has_different_model"`
+	// AvailableModels lists the distinct models of active sessions.
+	AvailableModels []string `json:"available_models"`
+	// SameModelSessions lists sessions with the same model as the requestor.
+	SameModelSessions []*Session `json:"-"`
+	// DifferentModelSessions lists sessions with different models.
+	DifferentModelSessions []*Session `json:"-"`
+}
+
+// GetDifferentModelStatus returns information about available different-model reviewers.
+func (db *DB) GetDifferentModelStatus(projectPath, requestorModel string) (*DifferentModelStatus, error) {
+	sessions, err := db.ListActiveSessions(projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("listing active sessions: %w", err)
+	}
+
+	status := &DifferentModelStatus{
+		AvailableModels: []string{},
+	}
+	modelSet := make(map[string]bool)
+
+	for _, s := range sessions {
+		if !modelSet[s.Model] {
+			modelSet[s.Model] = true
+			status.AvailableModels = append(status.AvailableModels, s.Model)
+		}
+
+		if s.Model == requestorModel {
+			status.SameModelSessions = append(status.SameModelSessions, s)
+		} else {
+			status.DifferentModelSessions = append(status.DifferentModelSessions, s)
+			status.HasDifferentModel = true
+		}
+	}
+
+	return status, nil
+}
+
 // scanSession scans a single session row.
 func scanSession(row *sql.Row) (*Session, error) {
 	s := &Session{}

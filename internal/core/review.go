@@ -55,6 +55,9 @@ type ReviewConfig struct {
 	TrustedSelfApprove []string
 	// TrustedSelfApproveDelay is the delay before trusted agents can self-approve.
 	TrustedSelfApproveDelay time.Duration
+	// DifferentModelTimeout is how long to wait for a different-model reviewer
+	// before escalating to human when require_different_model is set.
+	DifferentModelTimeout time.Duration
 }
 
 // DefaultReviewConfig returns the default review configuration.
@@ -63,6 +66,7 @@ func DefaultReviewConfig() ReviewConfig {
 		ConflictResolution:      ConflictAnyRejectionBlocks,
 		TrustedSelfApprove:      nil,
 		TrustedSelfApproveDelay: 5 * time.Minute,
+		DifferentModelTimeout:   5 * time.Minute,
 	}
 }
 
@@ -353,4 +357,141 @@ func (rs *ReviewService) GetReviewStatus(requestID string) (*ReviewStatus, error
 		NeedsMoreApprovals: approvals < request.MinApprovals && request.Status == db.StatusPending,
 		Reviews:            reviews,
 	}, nil
+}
+
+// DifferentModelEscalationStatus contains information about whether a request
+// should be escalated due to no different-model reviewers being available.
+type DifferentModelEscalationStatus struct {
+	// NeedsDifferentModel indicates if the request requires a different model.
+	NeedsDifferentModel bool `json:"needs_different_model"`
+	// RequestorModel is the model that submitted the request.
+	RequestorModel string `json:"requestor_model"`
+	// DifferentModelAvailable indicates if any different-model session is active.
+	DifferentModelAvailable bool `json:"different_model_available"`
+	// AvailableModels lists the models of all active sessions.
+	AvailableModels []string `json:"available_models"`
+	// SameModelAgents lists agents using the same model as the requestor.
+	SameModelAgents []string `json:"same_model_agents"`
+	// DifferentModelAgents lists agents using different models.
+	DifferentModelAgents []string `json:"different_model_agents"`
+	// TimeoutExpired indicates if the different-model timeout has expired.
+	TimeoutExpired bool `json:"timeout_expired"`
+	// TimeUntilEscalation is the time remaining until escalation (if not expired).
+	TimeUntilEscalation time.Duration `json:"time_until_escalation"`
+	// ShouldEscalate indicates if the request should be escalated to human.
+	ShouldEscalate bool `json:"should_escalate"`
+	// EscalationReason provides the reason for escalation.
+	EscalationReason string `json:"escalation_reason,omitempty"`
+}
+
+// CheckDifferentModelEscalation checks if a request should be escalated due to
+// no different-model reviewers being available after the timeout.
+func (rs *ReviewService) CheckDifferentModelEscalation(requestID string) (*DifferentModelEscalationStatus, error) {
+	request, err := rs.db.GetRequest(requestID)
+	if err != nil {
+		return nil, fmt.Errorf("getting request: %w", err)
+	}
+
+	status := &DifferentModelEscalationStatus{
+		NeedsDifferentModel: request.RequireDifferentModel,
+		RequestorModel:      request.RequestorModel,
+		AvailableModels:     []string{},
+		SameModelAgents:     []string{},
+		DifferentModelAgents: []string{},
+	}
+
+	// If different model not required, no escalation needed
+	if !request.RequireDifferentModel {
+		return status, nil
+	}
+
+	// Check current active sessions
+	modelStatus, err := rs.db.GetDifferentModelStatus(request.ProjectPath, request.RequestorModel)
+	if err != nil {
+		return nil, fmt.Errorf("checking different model status: %w", err)
+	}
+
+	status.DifferentModelAvailable = modelStatus.HasDifferentModel
+	status.AvailableModels = modelStatus.AvailableModels
+
+	for _, s := range modelStatus.SameModelSessions {
+		status.SameModelAgents = append(status.SameModelAgents, s.AgentName)
+	}
+	for _, s := range modelStatus.DifferentModelSessions {
+		status.DifferentModelAgents = append(status.DifferentModelAgents, s.AgentName)
+	}
+
+	// If different model is available, no escalation needed
+	if status.DifferentModelAvailable {
+		return status, nil
+	}
+
+	// Check if timeout has expired
+	timeSinceCreation := time.Since(request.CreatedAt)
+	status.TimeUntilEscalation = rs.config.DifferentModelTimeout - timeSinceCreation
+
+	if timeSinceCreation >= rs.config.DifferentModelTimeout {
+		status.TimeoutExpired = true
+		status.ShouldEscalate = true
+		status.EscalationReason = fmt.Sprintf(
+			"No reviewer with different model available after %v timeout. "+
+				"Request requires different model (requestor: %s), but all %d active sessions use same model.",
+			rs.config.DifferentModelTimeout,
+			request.RequestorModel,
+			len(modelStatus.SameModelSessions),
+		)
+	}
+
+	return status, nil
+}
+
+// EscalateDifferentModelTimeout escalates a request to human review because
+// no different-model reviewer was available within the timeout.
+func (rs *ReviewService) EscalateDifferentModelTimeout(requestID string) error {
+	// Verify escalation is warranted
+	status, err := rs.CheckDifferentModelEscalation(requestID)
+	if err != nil {
+		return fmt.Errorf("checking escalation status: %w", err)
+	}
+
+	if !status.ShouldEscalate {
+		return errors.New("escalation not warranted: different model available or timeout not expired")
+	}
+
+	// Update request status to escalated
+	if err := rs.db.UpdateRequestStatus(requestID, db.StatusEscalated); err != nil {
+		return fmt.Errorf("updating request status: %w", err)
+	}
+
+	return nil
+}
+
+// CheckAndEscalatePendingRequests checks all pending requests with
+// require_different_model and escalates those that have timed out.
+// Returns the number of requests escalated.
+func (rs *ReviewService) CheckAndEscalatePendingRequests(projectPath string) (int, error) {
+	requests, err := rs.db.ListPendingRequests(projectPath)
+	if err != nil {
+		return 0, fmt.Errorf("listing pending requests: %w", err)
+	}
+
+	escalated := 0
+	for _, req := range requests {
+		if !req.RequireDifferentModel {
+			continue
+		}
+
+		status, err := rs.CheckDifferentModelEscalation(req.ID)
+		if err != nil {
+			continue // Skip this one, don't fail the whole batch
+		}
+
+		if status.ShouldEscalate {
+			if err := rs.EscalateDifferentModelTimeout(req.ID); err == nil {
+				escalated++
+			}
+		}
+	}
+
+	return escalated, nil
 }
