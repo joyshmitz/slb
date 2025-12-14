@@ -3,9 +3,11 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -121,23 +123,20 @@ func (c *Client) IsDaemonRunning() bool {
 
 // GetStatus returns the detailed daemon status.
 func (c *Client) GetStatus() DaemonStatus {
-	// First check PID file
+	// Prefer real connectivity checks (supports TCP when SLB_HOST is set).
+	if c.canConnectSocket() {
+		return DaemonRunning
+	}
+
+	// Fall back to PID checks to distinguish "not running" vs "unresponsive".
 	pid, err := c.readPID()
 	if err != nil {
 		return DaemonNotRunning
 	}
-
-	// Verify process is alive using kill -0
 	if !c.isProcessAlive(pid) {
 		return DaemonNotRunning
 	}
-
-	// Try to connect to IPC socket
-	if !c.canConnectSocket() {
-		return DaemonUnresponsive
-	}
-
-	return DaemonRunning
+	return DaemonUnresponsive
 }
 
 // StatusInfo returns detailed status information for diagnostics.
@@ -157,10 +156,37 @@ func (c *Client) GetStatusInfo() StatusInfo {
 		SocketPath: c.socketPath,
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	socketCheck := c.checkSocketConnectivity(ctx)
+
+	if socketCheck.host != "" && socketCheck.transport == "tcp" {
+		info.PIDFile = ""
+		info.SocketPath = socketCheck.host
+		info.Status = DaemonRunning
+		info.SocketAlive = true
+		info.Message = fmt.Sprintf("Daemon reachable at %s", socketCheck.host)
+		return info
+	}
+
 	pid, err := c.readPID()
 	if err != nil {
-		info.Status = DaemonNotRunning
-		info.Message = fmt.Sprintf("PID file not found or invalid: %v", err)
+		if socketCheck.transport == "unix" {
+			info.Status = DaemonRunning
+			info.SocketAlive = true
+			if socketCheck.host != "" {
+				info.Message = fmt.Sprintf("SLB_HOST unreachable at %s; using local unix socket", socketCheck.host)
+			} else {
+				info.Message = "Daemon running (PID file missing)"
+			}
+		} else {
+			info.Status = DaemonNotRunning
+			if socketCheck.host != "" {
+				info.Message = fmt.Sprintf("Daemon not reachable at %s", socketCheck.host)
+			} else {
+				info.Message = fmt.Sprintf("PID file not found or invalid: %v", err)
+			}
+		}
 		return info
 	}
 	info.PID = pid
@@ -171,15 +197,23 @@ func (c *Client) GetStatusInfo() StatusInfo {
 		return info
 	}
 
-	if !c.canConnectSocket() {
+	if socketCheck.transport != "unix" {
 		info.Status = DaemonUnresponsive
-		info.Message = fmt.Sprintf("Process %d exists but socket connection failed", pid)
+		if socketCheck.host != "" {
+			info.Message = fmt.Sprintf("Daemon not reachable at %s and local socket ping failed", socketCheck.host)
+		} else {
+			info.Message = fmt.Sprintf("Process %d exists but socket connection failed", pid)
+		}
 		return info
 	}
 
 	info.Status = DaemonRunning
 	info.SocketAlive = true
-	info.Message = fmt.Sprintf("Daemon running with PID %d", pid)
+	if socketCheck.host != "" && socketCheck.tcpErr != nil {
+		info.Message = fmt.Sprintf("SLB_HOST unreachable at %s; using local unix socket", socketCheck.host)
+	} else {
+		info.Message = fmt.Sprintf("Daemon running with PID %d", pid)
+	}
 	return info
 }
 
@@ -214,13 +248,112 @@ func (c *Client) canConnectSocket() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", c.socketPath)
-	if err != nil {
-		return false
+	result := c.checkSocketConnectivity(ctx)
+	return result.transport != ""
+}
+
+type socketConnectivityResult struct {
+	host      string
+	transport string // "", "tcp", "unix"
+	tcpErr    error
+	unixErr   error
+}
+
+func (c *Client) checkSocketConnectivity(ctx context.Context) socketConnectivityResult {
+	result := socketConnectivityResult{
+		host: strings.TrimSpace(os.Getenv("SLB_HOST")),
 	}
-	conn.Close()
-	return true
+
+	if result.host != "" {
+		result.tcpErr = pingDaemonTCP(ctx, result.host, strings.TrimSpace(os.Getenv("SLB_SESSION_KEY")))
+		if result.tcpErr == nil {
+			result.transport = "tcp"
+			return result
+		}
+	}
+
+	result.unixErr = pingDaemonUnix(ctx, c.socketPath)
+	if result.unixErr == nil {
+		result.transport = "unix"
+	}
+	return result
+}
+
+func pingDaemonUnix(ctx context.Context, socketPath string) error {
+	if strings.TrimSpace(socketPath) == "" {
+		return fmt.Errorf("socket path is empty")
+	}
+	return dialAndPing(ctx, "unix", socketPath, nil)
+}
+
+func pingDaemonTCP(ctx context.Context, addr string, sessionKey string) error {
+	if strings.TrimSpace(addr) == "" {
+		return fmt.Errorf("tcp addr is empty")
+	}
+	auth := strings.TrimSpace(sessionKey)
+	return dialAndPing(ctx, "tcp", addr, &auth)
+}
+
+func dialAndPing(ctx context.Context, network, addr string, auth *string) error {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, network, addr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+	}
+
+	if auth != nil {
+		hello, err := json.Marshal(map[string]string{
+			"auth": strings.TrimSpace(*auth),
+		})
+		if err != nil {
+			return fmt.Errorf("marshal handshake: %w", err)
+		}
+		hello = append(hello, '\n')
+		if _, err := conn.Write(hello); err != nil {
+			return fmt.Errorf("write handshake: %w", err)
+		}
+	}
+
+	req := RPCRequest{
+		Method: "ping",
+		ID:     1,
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal ping: %w", err)
+	}
+	data = append(data, '\n')
+	if _, err := conn.Write(data); err != nil {
+		return fmt.Errorf("write ping: %w", err)
+	}
+
+	r := bufio.NewReader(conn)
+	line, err := r.ReadBytes('\n')
+	if err != nil {
+		return fmt.Errorf("read ping response: %w", err)
+	}
+
+	var resp RPCResponse
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return fmt.Errorf("unmarshal ping response: %w", err)
+	}
+	if resp.Error != nil {
+		return fmt.Errorf("ping error: %s", resp.Error.Message)
+	}
+
+	if m, ok := resp.Result.(map[string]any); ok {
+		if v, ok := m["pong"].(bool); ok && v {
+			return nil
+		}
+	}
+	return fmt.Errorf("unexpected ping response")
 }
 
 // DegradedMode represents whether we're operating in degraded mode.
@@ -299,30 +432,30 @@ func (c *Client) TryDaemon(fn func() error) (usedDaemon bool, err error) {
 
 // FeatureAvailability describes which features are available in current mode.
 type FeatureAvailability struct {
-	RealTimeUpdates       bool
-	DesktopNotifications  bool
+	RealTimeUpdates        bool
+	DesktopNotifications   bool
 	AgentMailNotifications bool
-	FastIPC               bool
-	FilePolling           bool // Always true as fallback
+	FastIPC                bool
+	FilePolling            bool // Always true as fallback
 }
 
 // GetFeatureAvailability returns feature availability based on daemon status.
 func (c *Client) GetFeatureAvailability() FeatureAvailability {
 	if c.IsDaemonRunning() {
 		return FeatureAvailability{
-			RealTimeUpdates:       true,
-			DesktopNotifications:  true,
+			RealTimeUpdates:        true,
+			DesktopNotifications:   true,
 			AgentMailNotifications: true,
-			FastIPC:               true,
-			FilePolling:           true,
+			FastIPC:                true,
+			FilePolling:            true,
 		}
 	}
 	return FeatureAvailability{
-		RealTimeUpdates:       false,
-		DesktopNotifications:  false,
+		RealTimeUpdates:        false,
+		DesktopNotifications:   false,
 		AgentMailNotifications: false,
-		FastIPC:               false,
-		FilePolling:           true, // Always available
+		FastIPC:                false,
+		FilePolling:            true, // Always available
 	}
 }
 

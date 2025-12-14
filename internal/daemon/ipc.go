@@ -41,18 +41,49 @@ type (
 
 // Standard JSON-RPC error codes.
 const (
-	ErrCodeParse       = -32700
-	ErrCodeInvalidReq  = -32600
+	ErrCodeParse          = -32700
+	ErrCodeInvalidReq     = -32600
 	ErrCodeMethodNotFound = -32601
 	ErrCodeInvalidParams  = -32602
-	ErrCodeInternal    = -32603
+	ErrCodeInternal       = -32603
 )
+
+type lockedConn struct {
+	net.Conn
+	mu sync.Mutex
+}
+
+func (c *lockedConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Conn.Write(p)
+}
+
+func newIPCServer(listener net.Listener, addr string, logger *log.Logger, cleanup func() error, connGuard func(net.Conn, *bufio.Scanner) error) *IPCServer {
+	if logger == nil {
+		logger = log.Default()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &IPCServer{
+		socketPath:  addr,
+		listener:    listener,
+		logger:      logger,
+		startTime:   time.Now(),
+		subscribers: make(map[int64]*subscriber),
+		ctx:         ctx,
+		cancel:      cancel,
+		cleanup:     cleanup,
+		connGuard:   connGuard,
+	}
+}
 
 // IPCServer handles Unix socket IPC for the daemon.
 type IPCServer struct {
 	socketPath string
 	listener   net.Listener
 	logger     *log.Logger
+	cleanup    func() error
+	connGuard  func(conn net.Conn, scanner *bufio.Scanner) error
 
 	// State tracking.
 	startTime    time.Time
@@ -68,6 +99,9 @@ type IPCServer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// Optional verifier for execution gate checks.
+	verifier *Verifier
 }
 
 // subscriber tracks an event subscription.
@@ -109,17 +143,13 @@ func NewIPCServer(socketPath string, logger *log.Logger) (*IPCServer, error) {
 		return nil, fmt.Errorf("setting socket permissions: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	return &IPCServer{
-		socketPath:  socketPath,
-		listener:    ln,
-		logger:      logger,
-		startTime:   time.Now(),
-		subscribers: make(map[int64]*subscriber),
-		ctx:         ctx,
-		cancel:      cancel,
-	}, nil
+	cleanup := func() error {
+		if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return newIPCServer(ln, socketPath, logger, cleanup, nil), nil
 }
 
 // Start begins accepting connections. Blocks until context is cancelled.
@@ -182,9 +212,10 @@ func (s *IPCServer) Stop() error {
 		s.logger.Warn("timed out waiting for connections to close")
 	}
 
-	// Cleanup socket file.
-	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing socket: %w", err)
+	if s.cleanup != nil {
+		if err := s.cleanup(); err != nil {
+			return fmt.Errorf("cleanup: %w", err)
+		}
 	}
 
 	s.logger.Info("ipc server stopped")
@@ -196,12 +227,22 @@ func (s *IPCServer) handleConnection(conn net.Conn) {
 	defer s.wg.Done()
 	defer conn.Close()
 
+	// Ensure responses and subscription events cannot interleave on the same connection.
+	locked := &lockedConn{Conn: conn}
+
 	s.activeConns.Add(1)
 	defer s.activeConns.Add(-1)
 
-	scanner := bufio.NewScanner(conn)
+	scanner := bufio.NewScanner(locked)
 	// Increase buffer for larger requests.
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	if s.connGuard != nil {
+		if err := s.connGuard(locked, scanner); err != nil {
+			s.logger.Debug("connection rejected", "error", err)
+			return
+		}
+	}
 
 	for scanner.Scan() {
 		select {
@@ -215,9 +256,9 @@ func (s *IPCServer) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		resp := s.handleRequest(conn, line)
+		resp := s.handleRequest(locked, line)
 		if resp != nil {
-			if err := s.writeResponse(conn, resp); err != nil {
+			if err := s.writeResponse(locked, resp); err != nil {
 				s.logger.Debug("write response failed", "error", err)
 				return
 			}
@@ -248,6 +289,8 @@ func (s *IPCServer) handleRequest(conn net.Conn, data []byte) *RPCResponse {
 		return s.handleNotify(req)
 	case "subscribe":
 		return s.handleSubscribe(req, conn)
+	case "verify_execute":
+		return s.handleVerifyExecute(req)
 	default:
 		return &RPCResponse{
 			Error: &Error{Code: ErrCodeMethodNotFound, Message: "method not found: " + req.Method},
@@ -422,4 +465,53 @@ func (s *IPCServer) BroadcastEvent(eventType string, payload any) {
 		Payload: payload,
 		Time:    time.Now().Unix(),
 	})
+}
+
+// SetVerifier configures the execution verifier for gate checks.
+func (s *IPCServer) SetVerifier(v *Verifier) {
+	s.verifier = v
+}
+
+// handleVerifyExecute handles the verify_execute IPC method.
+func (s *IPCServer) handleVerifyExecute(req RPCRequest) *RPCResponse {
+	if s.verifier == nil {
+		return &RPCResponse{
+			Error: &Error{Code: ErrCodeInternal, Message: "verifier not configured"},
+			ID:    req.ID,
+		}
+	}
+
+	var params VerifyExecuteParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &RPCResponse{
+			Error: &Error{Code: ErrCodeInvalidParams, Message: "invalid params: " + err.Error()},
+			ID:    req.ID,
+		}
+	}
+
+	if params.RequestID == "" {
+		return &RPCResponse{
+			Error: &Error{Code: ErrCodeInvalidParams, Message: "request_id is required"},
+			ID:    req.ID,
+		}
+	}
+	if params.SessionID == "" {
+		return &RPCResponse{
+			Error: &Error{Code: ErrCodeInvalidParams, Message: "session_id is required"},
+			ID:    req.ID,
+		}
+	}
+
+	result, err := s.verifier.VerifyAndMarkExecuting(params.RequestID, params.SessionID)
+	if err != nil {
+		return &RPCResponse{
+			Error: &Error{Code: ErrCodeInternal, Message: err.Error()},
+			ID:    req.ID,
+		}
+	}
+
+	return &RPCResponse{
+		Result: result.ToIPCResponse(),
+		ID:     req.ID,
+	}
 }

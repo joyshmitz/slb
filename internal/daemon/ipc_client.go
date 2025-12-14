@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,9 +40,33 @@ func (c *IPCClient) Connect(ctx context.Context) error {
 	}
 
 	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", c.socketPath)
-	if err != nil {
-		return fmt.Errorf("connecting to daemon: %w", err)
+	var conn net.Conn
+	var err error
+
+	if host := strings.TrimSpace(os.Getenv("SLB_HOST")); host != "" {
+		conn, err = d.DialContext(ctx, "tcp", host)
+		if err == nil {
+			hello, err := json.Marshal(map[string]string{
+				"auth": strings.TrimSpace(os.Getenv("SLB_SESSION_KEY")),
+			})
+			if err != nil {
+				_ = conn.Close()
+				return fmt.Errorf("marshal tcp handshake: %w", err)
+			}
+			hello = append(hello, '\n')
+			if _, err := conn.Write(hello); err != nil {
+				_ = conn.Close()
+				// Fall back to Unix socket when TCP is reachable but not usable.
+				conn = nil
+			}
+		}
+	}
+
+	if conn == nil {
+		conn, err = d.DialContext(ctx, "unix", c.socketPath)
+		if err != nil {
+			return fmt.Errorf("connecting to daemon: %w", err)
+		}
 	}
 
 	c.conn = conn
@@ -204,6 +230,9 @@ func (c *IPCClient) Subscribe(ctx context.Context) (<-chan Event, error) {
 		return nil, err
 	}
 
+	// Subscribe is designed for long-lived event streaming.
+	// Avoid issuing other RPC calls on this client while subscribed.
+
 	c.mu.Lock()
 	// Send subscribe request
 	id := c.nextID.Add(1)
@@ -245,38 +274,32 @@ func (c *IPCClient) Subscribe(ctx context.Context) (<-chan Event, error) {
 	}
 	c.mu.Unlock()
 
-	// Create event channel and start reading events
+	// Create event channel and start reading events.
 	events := make(chan Event, 100)
 
 	go func() {
 		defer close(events)
 		for {
+			select {
+			case <-ctx.Done():
+				_ = c.Close()
+				return
+			default:
+			}
+
 			c.mu.Lock()
-			if c.scanner == nil {
-				c.mu.Unlock()
+			scanner := c.scanner
+			c.mu.Unlock()
+			if scanner == nil {
 				return
 			}
 
-			// Set deadline to allow checking for context cancellation
-			if deadline, ok := ctx.Deadline(); ok {
-				c.conn.SetReadDeadline(deadline)
-			} else {
-				c.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			if !scanner.Scan() {
+				_ = c.Close()
+				return
 			}
 
-			if !c.scanner.Scan() {
-				c.mu.Unlock()
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					// Timeout, check context and continue
-					continue
-				}
-			}
-
-			line := c.scanner.Bytes()
-			c.mu.Unlock()
+			line := scanner.Bytes()
 
 			if len(line) == 0 {
 				continue
@@ -293,6 +316,7 @@ func (c *IPCClient) Subscribe(ctx context.Context) (<-chan Event, error) {
 			select {
 			case events <- eventMsg.Event:
 			case <-ctx.Done():
+				_ = c.Close()
 				return
 			}
 		}
@@ -303,17 +327,17 @@ func (c *IPCClient) Subscribe(ctx context.Context) (<-chan Event, error) {
 
 // RequestStreamEvent is a structured event for the watch command output.
 type RequestStreamEvent struct {
-	Event       string `json:"event"`
-	RequestID   string `json:"request_id,omitempty"`
-	RiskTier    string `json:"risk_tier,omitempty"`
-	Command     string `json:"command,omitempty"`
-	Requestor   string `json:"requestor,omitempty"`
-	ApprovedBy  string `json:"approved_by,omitempty"`
-	RejectedBy  string `json:"rejected_by,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-	ExitCode    *int   `json:"exit_code,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	ExecutedAt  string `json:"executed_at,omitempty"`
+	Event      string `json:"event"`
+	RequestID  string `json:"request_id,omitempty"`
+	RiskTier   string `json:"risk_tier,omitempty"`
+	Command    string `json:"command,omitempty"`
+	Requestor  string `json:"requestor,omitempty"`
+	ApprovedBy string `json:"approved_by,omitempty"`
+	RejectedBy string `json:"rejected_by,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
+	CreatedAt  string `json:"created_at,omitempty"`
+	ExecutedAt string `json:"executed_at,omitempty"`
 }
 
 // ToRequestStreamEvent converts a daemon Event to a RequestStreamEvent.

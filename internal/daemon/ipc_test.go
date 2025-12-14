@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -128,6 +130,7 @@ func TestIPCServer_PingMethod(t *testing.T) {
 		t.Error("expected pong: true")
 	}
 
+	_ = conn.Close()
 	cancel()
 	_ = srv.Stop()
 }
@@ -195,6 +198,7 @@ func TestIPCServer_StatusMethod(t *testing.T) {
 		t.Error("expected active_sessions in status")
 	}
 
+	_ = conn.Close()
 	cancel()
 	_ = srv.Stop()
 }
@@ -254,6 +258,7 @@ func TestIPCServer_NotifyMethod(t *testing.T) {
 		t.Error("expected sent: true")
 	}
 
+	_ = conn.Close()
 	cancel()
 	_ = srv.Stop()
 }
@@ -308,6 +313,7 @@ func TestIPCServer_NotifyMethod_MissingType(t *testing.T) {
 		t.Errorf("error code = %d, want %d", resp.Error.Code, ErrCodeInvalidParams)
 	}
 
+	_ = conn.Close()
 	cancel()
 	_ = srv.Stop()
 }
@@ -360,6 +366,7 @@ func TestIPCServer_MethodNotFound(t *testing.T) {
 		t.Errorf("error code = %d, want %d", resp.Error.Code, ErrCodeMethodNotFound)
 	}
 
+	_ = conn.Close()
 	cancel()
 	_ = srv.Stop()
 }
@@ -410,6 +417,7 @@ func TestIPCServer_ParseError(t *testing.T) {
 		t.Errorf("error code = %d, want %d", resp.Error.Code, ErrCodeParse)
 	}
 
+	_ = conn.Close()
 	cancel()
 	_ = srv.Stop()
 }
@@ -494,6 +502,7 @@ func TestIPCServer_Subscribe(t *testing.T) {
 		}
 	}
 
+	_ = conn.Close()
 	cancel()
 	_ = srv.Stop()
 }
@@ -589,6 +598,7 @@ func TestIPCServer_GracefulShutdown(t *testing.T) {
 	defer conn.Close()
 
 	// Cancel context and stop server.
+	_ = conn.Close()
 	cancel()
 	if err := srv.Stop(); err != nil {
 		t.Errorf("Stop failed: %v", err)
@@ -607,5 +617,197 @@ func TestIPCServer_GracefulShutdown(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Error("server did not exit in time")
+	}
+}
+
+func TestIPCClient_call_NotConnected(t *testing.T) {
+	client := NewIPCClient("/tmp/does-not-matter.sock")
+	if _, err := client.call("ping", nil); err == nil {
+		t.Fatalf("expected error when calling without Connect")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close should be idempotent, got: %v", err)
+	}
+}
+
+func TestIPCClient_PingStatusNotify_Unix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket tests not supported on windows")
+	}
+
+	socketPath := filepath.Join(t.TempDir(), "ipc.sock")
+	logger := log.New(io.Discard)
+	srv, err := NewIPCServer(socketPath, logger)
+	if err != nil {
+		t.Fatalf("NewIPCServer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		_ = srv.Stop()
+	})
+	go func() { _ = srv.Start(ctx) }()
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+
+	client := NewIPCClient(socketPath)
+	t.Cleanup(func() { _ = client.Close() })
+
+	if err := client.Ping(callCtx); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+
+	info, err := client.Status(callCtx)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if info == nil {
+		t.Fatalf("expected status info")
+	}
+
+	if err := client.Notify(callCtx, "request_pending", map[string]any{
+		"request_id": "req-1",
+	}); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+}
+
+func TestIPCClient_SubscribeReceivesEvents_Unix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket tests not supported on windows")
+	}
+
+	socketPath := filepath.Join(t.TempDir(), "ipc.sock")
+	logger := log.New(io.Discard)
+	srv, err := NewIPCServer(socketPath, logger)
+	if err != nil {
+		t.Fatalf("NewIPCServer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		_ = srv.Stop()
+	})
+	go func() { _ = srv.Start(ctx) }()
+
+	subCtx, subCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer subCancel()
+
+	subscriber := NewIPCClient(socketPath)
+	t.Cleanup(func() { _ = subscriber.Close() })
+
+	events, err := subscriber.Subscribe(subCtx)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	publisher := NewIPCClient(socketPath)
+	t.Cleanup(func() { _ = publisher.Close() })
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+
+	if err := publisher.Notify(callCtx, "request_executed", map[string]any{
+		"request_id":  "req-123",
+		"risk_tier":   "critical",
+		"command":     "rm -rf /tmp/x",
+		"requestor":   "AgentA",
+		"approved_by": "AgentB",
+		"exit_code":   7,
+	}); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+
+	select {
+	case ev := <-events:
+		if ev.Type != "request_executed" {
+			t.Fatalf("unexpected event type: %s", ev.Type)
+		}
+
+		stream := ToRequestStreamEvent(ev)
+		if stream == nil {
+			t.Fatalf("expected stream event")
+		}
+		if stream.Event != "request_executed" || stream.RequestID != "req-123" || stream.RiskTier != "critical" {
+			t.Fatalf("unexpected stream mapping: %+v", stream)
+		}
+		if stream.ExitCode == nil || *stream.ExitCode != 7 {
+			t.Fatalf("expected exit_code=7, got %+v", stream.ExitCode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for event")
+	}
+}
+
+func TestIPCClient_ConnectFallsBackToUnixWhenSLBHostInvalid(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket tests not supported on windows")
+	}
+
+	t.Setenv("SLB_HOST", "127.0.0.1:0")
+	t.Setenv("SLB_SESSION_KEY", "ignored")
+
+	socketPath := filepath.Join(t.TempDir(), "ipc.sock")
+	logger := log.New(io.Discard)
+	srv, err := NewIPCServer(socketPath, logger)
+	if err != nil {
+		t.Fatalf("NewIPCServer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		_ = srv.Stop()
+	})
+	go func() { _ = srv.Start(ctx) }()
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+
+	client := NewIPCClient(socketPath)
+	t.Cleanup(func() { _ = client.Close() })
+
+	if err := client.Ping(callCtx); err != nil {
+		t.Fatalf("Ping (expected unix fallback): %v", err)
+	}
+}
+
+func TestIPCClient_PingOverTCPWithSLBHost(t *testing.T) {
+	logger := log.New(io.Discard)
+
+	srv, err := NewTCPServer(TCPServerOptions{
+		Addr:        "127.0.0.1:0",
+		RequireAuth: true,
+		AllowedIPs:  []string{"127.0.0.1"},
+		ValidateAuth: func(_ context.Context, sessionKey string) (bool, error) {
+			return sessionKey == "good", nil
+		},
+	}, logger)
+	if err != nil {
+		t.Fatalf("NewTCPServer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		_ = srv.Stop()
+	})
+	go func() { _ = srv.Start(ctx) }()
+
+	addr := srv.listener.Addr().String()
+	t.Setenv("SLB_HOST", addr)
+	t.Setenv("SLB_SESSION_KEY", "good")
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+
+	client := NewIPCClient("/tmp/unused.sock")
+	t.Cleanup(func() { _ = client.Close() })
+
+	if err := client.Ping(callCtx); err != nil {
+		t.Fatalf("Ping over TCP: %v", err)
 	}
 }

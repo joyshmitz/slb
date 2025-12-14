@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Dicklesworthstone/slb/internal/config"
+	"github.com/Dicklesworthstone/slb/internal/db"
 	"github.com/Dicklesworthstone/slb/internal/utils"
 	"github.com/charmbracelet/log"
 )
@@ -151,23 +153,81 @@ func RunDaemon(ctx context.Context, opts ServerOptions) error {
 
 	logger.Info("daemon started", "pid", os.Getpid(), "pid_file", opts.PIDFile, "socket", opts.SocketPath)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- ipcServer.Start(signalCtx)
-	}()
+	projectPath, _ := os.Getwd()
+	cfg := config.DefaultConfig()
+	if loaded, err := config.Load(config.LoadOptions{ProjectDir: projectPath}); err != nil {
+		logger.Warn("failed to load config; using defaults", "error", err)
+	} else {
+		cfg = loaded
+	}
+
+	notifications := NewNotificationManager(projectPath, cfg.Notifications, logger, nil)
+	go notifications.Run(signalCtx, 10*time.Second)
+
+	servers := []*IPCServer{ipcServer}
+	if strings.TrimSpace(cfg.Daemon.TCPAddr) != "" {
+		tcpSrv, err := NewTCPServer(TCPServerOptions{
+			Addr:        cfg.Daemon.TCPAddr,
+			RequireAuth: cfg.Daemon.TCPRequireAuth,
+			AllowedIPs:  cfg.Daemon.TCPAllowedIPs,
+			ValidateAuth: func(ctx context.Context, sessionKey string) (bool, error) {
+				dbPath := filepath.Join(projectPath, ".slb", "state.db")
+				opts := db.OpenOptions{
+					CreateIfNotExists: false,
+					InitSchema:        false,
+					ReadOnly:          true,
+				}
+				dbConn, err := db.OpenWithOptions(dbPath, opts)
+				if err != nil {
+					return false, err
+				}
+				defer dbConn.Close()
+
+				var count int
+				if err := dbConn.QueryRow(`SELECT COUNT(*) FROM sessions WHERE session_key = ? AND ended_at IS NULL`, sessionKey).Scan(&count); err != nil {
+					return false, err
+				}
+				return count > 0, nil
+			},
+		}, logger)
+		if err != nil {
+			logger.Warn("tcp listener disabled", "error", err)
+		} else {
+			servers = append(servers, tcpSrv)
+			logger.Info("tcp listener started", "addr", cfg.Daemon.TCPAddr, "require_auth", cfg.Daemon.TCPRequireAuth)
+		}
+	}
+
+	errCh := make(chan error, len(servers))
+	for _, srv := range servers {
+		srv := srv
+		go func() {
+			errCh <- srv.Start(signalCtx)
+		}()
+	}
 
 	select {
 	case <-signalCtx.Done():
 		logger.Info("daemon stopping", "reason", "signal_or_context")
-		if err := ipcServer.Stop(); err != nil {
-			logger.Warn("ipc server stop error", "error", err)
+		for _, srv := range servers {
+			if err := srv.Stop(); err != nil {
+				logger.Warn("ipc server stop error", "addr", srv.socketPath, "error", err)
+			}
 		}
-		<-errCh
+		for i := 0; i < len(servers); i++ {
+			<-errCh
+		}
 		return nil
 	case err := <-errCh:
 		if err != nil {
 			logger.Error("ipc server failed", "error", err)
+			for _, srv := range servers {
+				_ = srv.Stop()
+			}
 			return fmt.Errorf("ipc server: %w", err)
+		}
+		for _, srv := range servers {
+			_ = srv.Stop()
 		}
 		return nil
 	}
