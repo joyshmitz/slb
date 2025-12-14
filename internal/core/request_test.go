@@ -252,9 +252,10 @@ func TestDynamicQuorum(t *testing.T) {
 
 func TestDynamicQuorum_BelowFloor(t *testing.T) {
 	database := testutil.NewTestDB(t)
+	project := "/test/project"
 
-	// Only 1 session
-	testutil.MakeSession(t, database, testutil.SessionWithAgentName("agent1"))
+	// Only 1 session in project
+	testutil.MakeSession(t, database, testutil.SessionWithAgentName("agent1"), testutil.SessionWithProject(project))
 
 	config := DefaultRequestCreatorConfig()
 	config.DynamicQuorumEnabled = true
@@ -263,7 +264,7 @@ func TestDynamicQuorum_BelowFloor(t *testing.T) {
 	creator := NewRequestCreator(database, nil, nil, config)
 
 	// With 1 session (0 reviewers), should use floor
-	minApprovals := creator.checkDynamicQuorum(RiskTierCritical, 2, "/test/project")
+	minApprovals := creator.checkDynamicQuorum(RiskTierCritical, 2, project)
 	if minApprovals != 1 {
 		t.Errorf("expected minApprovals=1 (floor) with 1 session, got %d", minApprovals)
 	}
