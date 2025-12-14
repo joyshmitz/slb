@@ -447,6 +447,7 @@ func (rs *ReviewService) CheckDifferentModelEscalation(requestID string) (*Diffe
 
 // EscalateDifferentModelTimeout escalates a request to human review because
 // no different-model reviewer was available within the timeout.
+// The state machine requires pending→timeout→escalated transitions.
 func (rs *ReviewService) EscalateDifferentModelTimeout(requestID string) error {
 	// Verify escalation is warranted
 	status, err := rs.CheckDifferentModelEscalation(requestID)
@@ -458,9 +459,22 @@ func (rs *ReviewService) EscalateDifferentModelTimeout(requestID string) error {
 		return errors.New("escalation not warranted: different model available or timeout not expired")
 	}
 
-	// Update request status to escalated
+	// Get current request status
+	request, err := rs.db.GetRequest(requestID)
+	if err != nil {
+		return fmt.Errorf("getting request: %w", err)
+	}
+
+	// State machine requires: pending → timeout → escalated
+	if request.Status == db.StatusPending {
+		if err := rs.db.UpdateRequestStatus(requestID, db.StatusTimeout); err != nil {
+			return fmt.Errorf("transitioning to timeout: %w", err)
+		}
+	}
+
+	// Now transition to escalated
 	if err := rs.db.UpdateRequestStatus(requestID, db.StatusEscalated); err != nil {
-		return fmt.Errorf("updating request status: %w", err)
+		return fmt.Errorf("transitioning to escalated: %w", err)
 	}
 
 	return nil
