@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/slb/internal/config"
 	"github.com/Dicklesworthstone/slb/internal/db"
 	"github.com/Dicklesworthstone/slb/internal/output"
 	"github.com/spf13/cobra"
@@ -13,11 +14,13 @@ import (
 var (
 	flagReviewAll     bool
 	flagReviewProject string
+	flagReviewPool    bool
 )
 
 func init() {
 	reviewCmd.Flags().BoolVarP(&flagReviewAll, "all", "a", false, "show requests from all projects")
 	reviewCmd.Flags().StringVarP(&flagReviewProject, "project", "C", "", "filter by project path")
+	reviewCmd.Flags().BoolVar(&flagReviewPool, "review-pool", false, "show requests from configured review pool (cross-project)")
 
 	reviewCmd.AddCommand(reviewListCmd)
 	reviewCmd.AddCommand(reviewShowCmd)
@@ -49,6 +52,23 @@ var reviewListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List pending requests awaiting review",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		project := flagReviewProject
+		if project == "" {
+			var err error
+			project, err = projectPath()
+			if err != nil {
+				return err
+			}
+		}
+
+		cfg, err := config.Load(config.LoadOptions{
+			ProjectDir: project,
+			ConfigPath: flagConfig,
+		})
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+
 		dbConn, err := db.Open(GetDB())
 		if err != nil {
 			return fmt.Errorf("opening database: %w", err)
@@ -59,14 +79,12 @@ var reviewListCmd = &cobra.Command{
 		if flagReviewAll {
 			requests, err = dbConn.ListPendingRequestsAllProjects()
 		} else {
-			project := flagReviewProject
-			if project == "" {
-				project, err = projectPath()
-				if err != nil {
-					return err
-				}
+			if flagReviewPool && cfg.General.CrossProjectReviews && len(cfg.General.ReviewPool) > 0 {
+				paths := dedupeStrings(append([]string{project}, cfg.General.ReviewPool...))
+				requests, err = dbConn.ListPendingRequestsByProjects(paths)
+			} else {
+				requests, err = dbConn.ListPendingRequests(project)
 			}
-			requests, err = dbConn.ListPendingRequests(project)
 		}
 		if err != nil {
 			return fmt.Errorf("listing requests: %w", err)
@@ -165,28 +183,28 @@ func showRequestDetails(requestID string) error {
 	}
 
 	type requestDetail struct {
-		ID                    string        `json:"id"`
-		Status                string        `json:"status"`
-		RiskTier              string        `json:"risk_tier"`
-		Command               string        `json:"command"`
-		CommandHash           string        `json:"command_hash"`
-		Cwd                   string        `json:"cwd"`
-		ProjectPath           string        `json:"project_path"`
-		RequestorAgent        string        `json:"requestor_agent"`
-		RequestorModel        string        `json:"requestor_model"`
-		JustificationReason   string        `json:"justification_reason"`
-		JustificationEffect   string        `json:"justification_expected_effect,omitempty"`
-		JustificationGoal     string        `json:"justification_goal,omitempty"`
-		JustificationSafety   string        `json:"justification_safety_argument,omitempty"`
-		MinApprovals          int           `json:"min_approvals"`
-		CurrentApprovals      int           `json:"current_approvals"`
-		CurrentRejections     int           `json:"current_rejections"`
-		RequireDifferentModel bool          `json:"require_different_model"`
-		Reviews               []reviewView  `json:"reviews,omitempty"`
-		DryRunCommand         string        `json:"dry_run_command,omitempty"`
-		DryRunOutput          string        `json:"dry_run_output,omitempty"`
-		CreatedAt             string        `json:"created_at"`
-		ExpiresAt             string        `json:"expires_at,omitempty"`
+		ID                    string       `json:"id"`
+		Status                string       `json:"status"`
+		RiskTier              string       `json:"risk_tier"`
+		Command               string       `json:"command"`
+		CommandHash           string       `json:"command_hash"`
+		Cwd                   string       `json:"cwd"`
+		ProjectPath           string       `json:"project_path"`
+		RequestorAgent        string       `json:"requestor_agent"`
+		RequestorModel        string       `json:"requestor_model"`
+		JustificationReason   string       `json:"justification_reason"`
+		JustificationEffect   string       `json:"justification_expected_effect,omitempty"`
+		JustificationGoal     string       `json:"justification_goal,omitempty"`
+		JustificationSafety   string       `json:"justification_safety_argument,omitempty"`
+		MinApprovals          int          `json:"min_approvals"`
+		CurrentApprovals      int          `json:"current_approvals"`
+		CurrentRejections     int          `json:"current_rejections"`
+		RequireDifferentModel bool         `json:"require_different_model"`
+		Reviews               []reviewView `json:"reviews,omitempty"`
+		DryRunCommand         string       `json:"dry_run_command,omitempty"`
+		DryRunOutput          string       `json:"dry_run_output,omitempty"`
+		CreatedAt             string       `json:"created_at"`
+		ExpiresAt             string       `json:"expires_at,omitempty"`
 	}
 
 	// Build command display
