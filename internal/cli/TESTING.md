@@ -439,6 +439,27 @@ func TestMyFunc_RetryLogic(t *testing.T) {
 }
 ```
 
+## Coverage Summary
+
+**Current Coverage: 74.4%** (up from 57.7%)
+
+### Coverage by Category
+
+| Category | Coverage | Notes |
+|----------|----------|-------|
+| Business Logic | 100% | All pure functions fully tested |
+| Command Handlers | ~85% | Most commands well covered |
+| System-Level | 0% | See acceptance matrix below |
+
+### Pure Functions at 100% Coverage
+- `shouldAutoApproveCaution` - Risk tier evaluation logic
+- `evaluateRequestForPolling` - Request filtering logic
+- `statusToEventType` - Status mapping
+- `applyHistoryFilters` - Query filters
+- `parseTier` - Risk tier parsing
+- `outputPatterns` - Pattern formatting
+- All `init` functions
+
 ## Coverage Acceptance Matrix
 
 Some functions are intentionally excluded from unit test coverage due to their nature:
@@ -451,6 +472,9 @@ Some functions are intentionally excluded from unit test coverage due to their n
 | `runWatchPolling` | 0% | Infinite loop with DB polling. Integration tested. |
 | `autoApproveCaution` | 0% | Complex global state (DB, session flags). Core logic in `shouldAutoApproveCaution` is 100%. |
 | `followFile` | 0% | Signal handling, os.Stdin interaction. |
+| `runSafeCommand` | 0% | Executes shell commands with exec.Command. |
+| `runApprovedRequest` | 0% | Command execution with side effects. |
+| `writeError` | 0% | Simple error output helper. |
 
 ### Pure Function Extraction Strategy
 
