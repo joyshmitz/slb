@@ -163,3 +163,76 @@ func TestToRequestCreatorConfig(t *testing.T) {
 		t.Errorf("expected BlockedAgents=['blocked-agent'], got %v", result.BlockedAgents)
 	}
 }
+
+func TestToRateLimitConfig_InvalidAction(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.RateLimits.RateLimitAction = "invalid-action"
+
+	result := toRateLimitConfig(cfg)
+
+	// Should default to "reject" for invalid action
+	if result.Action != "reject" {
+		t.Errorf("expected Action=reject for invalid action, got %v", result.Action)
+	}
+}
+
+func TestToRateLimitConfig_QueueAction(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.RateLimits.RateLimitAction = "queue"
+
+	result := toRateLimitConfig(cfg)
+
+	if result.Action != "queue" {
+		t.Errorf("expected Action=queue, got %v", result.Action)
+	}
+}
+
+func TestToRateLimitConfig_WarnAction(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.RateLimits.RateLimitAction = "warn"
+
+	result := toRateLimitConfig(cfg)
+
+	if result.Action != "warn" {
+		t.Errorf("expected Action=warn, got %v", result.Action)
+	}
+}
+
+func TestToRequestCreatorConfig_ZeroTimeout(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.General.RequestTimeoutSecs = 0
+
+	result := toRequestCreatorConfig(cfg)
+
+	// Should default to 30 for zero/negative timeout
+	if result.RequestTimeoutMinutes != 30 {
+		t.Errorf("expected RequestTimeoutMinutes=30 for zero timeout, got %d", result.RequestTimeoutMinutes)
+	}
+}
+
+func TestToRequestCreatorConfig_NegativeTimeout(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.General.RequestTimeoutSecs = -60
+
+	result := toRequestCreatorConfig(cfg)
+
+	// Should default to 30 for negative timeout
+	if result.RequestTimeoutMinutes != 30 {
+		t.Errorf("expected RequestTimeoutMinutes=30 for negative timeout, got %d", result.RequestTimeoutMinutes)
+	}
+}
+
+func TestToRequestCreatorConfig_WithIntegrations(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Integrations.AgentMailEnabled = true
+	cfg.Integrations.AgentMailThread = "test-thread"
+
+	result := toRequestCreatorConfig(cfg)
+
+	if !result.AgentMailEnabled {
+		t.Error("expected AgentMailEnabled=true")
+	}
+	if result.AgentMailThread != "test-thread" {
+		t.Errorf("expected AgentMailThread=test-thread, got %v", result.AgentMailThread)
+	}
+}

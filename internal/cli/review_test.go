@@ -311,3 +311,110 @@ func TestReviewCommand_Help(t *testing.T) {
 		t.Error("expected help to mention 'show' subcommand")
 	}
 }
+
+func TestReviewShowCommand_TextOutput(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+		testutil.WithModel("test-model"),
+	)
+	req := testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+		testutil.WithRisk(db.RiskTierDangerous),
+	)
+
+	cmd := newTestReviewCmd(h.DBPath)
+	// No -j flag, so text output
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Text output should contain the request ID and status
+	if !strings.Contains(stdout, req.ID) {
+		t.Error("expected text output to contain request ID")
+	}
+}
+
+func TestReviewShowCommand_WithRejection(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	requestorSess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Requestor"),
+		testutil.WithModel("model-a"),
+	)
+	reviewerSess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Reviewer"),
+		testutil.WithModel("model-b"),
+	)
+
+	req := testutil.MakeRequest(t, h.DB, requestorSess,
+		testutil.WithCommand("rm -rf /", h.ProjectDir, true),
+	)
+
+	// Add a rejection review
+	review := &db.Review{
+		RequestID:         req.ID,
+		ReviewerSessionID: reviewerSess.ID,
+		ReviewerAgent:     reviewerSess.AgentName,
+		ReviewerModel:     reviewerSess.Model,
+		Decision:          db.DecisionReject,
+		Comments:          "Too dangerous",
+	}
+	if err := h.DB.CreateReview(review); err != nil {
+		t.Fatalf("failed to create review: %v", err)
+	}
+
+	cmd := newTestReviewCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID, "-j")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nstdout: %s", err, stdout)
+	}
+
+	if result["current_rejections"].(float64) != 1 {
+		t.Errorf("expected current_rejections=1, got %v", result["current_rejections"])
+	}
+}
+
+func TestReviewListCommand_AllProjects(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+	)
+	testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+	)
+
+	cmd := newTestReviewCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "review", "list", "--all", "-j")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nstdout: %s", err, stdout)
+	}
+
+	// Should find the request when using --all
+	if len(result) < 1 {
+		t.Error("expected at least 1 request with --all flag")
+	}
+}
