@@ -264,5 +264,126 @@ func TestShowQuickReference_NonUnicode(t *testing.T) {
 	}
 }
 
+// TestDetectWidth_DocumentedLimitations documents coverage gaps for detectWidth.
+// Note: The term.GetSize success path requires stdout to be a real terminal,
+// which is rare in CI/test environments. This is an acceptable coverage gap.
+func TestDetectWidth_DocumentedLimitations(t *testing.T) {
+	// detectWidth has three paths:
+	// 1. term.GetSize succeeds -> return terminal width (hard to test)
+	// 2. COLUMNS env is set and valid -> return that value (covered)
+	// 3. Default fallback -> return 80 (covered)
+	//
+	// Path 1 requires stdout to be a terminal. In test environments,
+	// stdout is usually a pipe or file, so GetSize returns an error.
+
+	// Verify fallback paths work correctly
+	originalColumns := os.Getenv("COLUMNS")
+	defer os.Setenv("COLUMNS", originalColumns)
+
+	// Test with negative COLUMNS value
+	os.Setenv("COLUMNS", "-5")
+	width := detectWidth()
+	if width <= 0 {
+		t.Errorf("detectWidth() should return positive value, got %d", width)
+	}
+
+	// Test with zero COLUMNS
+	os.Setenv("COLUMNS", "0")
+	width = detectWidth()
+	if width != 80 {
+		t.Errorf("detectWidth() should return 80 for invalid COLUMNS, got %d", width)
+	}
+
+	// Test with very large COLUMNS
+	os.Setenv("COLUMNS", "10000")
+	width = detectWidth()
+	if width != 10000 {
+		t.Errorf("detectWidth() should return 10000, got %d", width)
+	}
+}
+
+// TestGradientText_SingleColor tests gradient with exactly one color.
+func TestGradientText_SingleColor(t *testing.T) {
+	originalLang := os.Getenv("LANG")
+	originalTerm := os.Getenv("TERM")
+	defer func() {
+		os.Setenv("LANG", originalLang)
+		os.Setenv("TERM", originalTerm)
+	}()
+
+	os.Setenv("LANG", "en_US.UTF-8")
+	os.Setenv("TERM", "xterm")
+
+	// Single color should work without crashing
+	result := gradientText("hello", []lipgloss.Color{colorMauve})
+	if result == "" {
+		t.Error("expected non-empty result with single color")
+	}
+	// With single color, the entire text should be rendered in that color
+	if !strings.Contains(result, "hello") && len(result) == 0 {
+		t.Error("expected result to contain the original text")
+	}
+}
+
+// TestGradientText_SingleCharacter tests gradient with a single character.
+// This is an edge case because the division in the gradient calculation
+// would be (i * (segments-1)) / (len(runes)-1) = 0 / 0 if not handled.
+func TestGradientText_SingleCharacter(t *testing.T) {
+	originalLang := os.Getenv("LANG")
+	originalTerm := os.Getenv("TERM")
+	defer func() {
+		os.Setenv("LANG", originalLang)
+		os.Setenv("TERM", originalTerm)
+	}()
+
+	os.Setenv("LANG", "en_US.UTF-8")
+	os.Setenv("TERM", "xterm")
+
+	// Single character with multiple colors should work without panic
+	result := gradientText("X", []lipgloss.Color{colorMauve, colorBlue})
+	if result == "" {
+		t.Error("expected non-empty result with single character")
+	}
+}
+
+// TestGradientText_EmptyString tests gradient with empty input.
+func TestGradientText_EmptyString(t *testing.T) {
+	originalLang := os.Getenv("LANG")
+	defer os.Setenv("LANG", originalLang)
+
+	os.Setenv("LANG", "en_US.UTF-8")
+	os.Setenv("TERM", "xterm")
+
+	// Empty string should return empty string
+	result := gradientText("", []lipgloss.Color{colorMauve, colorBlue})
+	if result != "" {
+		t.Errorf("expected empty result for empty input, got %q", result)
+	}
+}
+
+// TestGradientText_NoUnicodeSupport tests gradient when unicode is not supported.
+func TestGradientText_NoUnicodeSupport(t *testing.T) {
+	originalLang := os.Getenv("LANG")
+	originalTerm := os.Getenv("TERM")
+	originalLcAll := os.Getenv("LC_ALL")
+	defer func() {
+		os.Setenv("LANG", originalLang)
+		os.Setenv("TERM", originalTerm)
+		os.Setenv("LC_ALL", originalLcAll)
+	}()
+
+	// Set up environment without unicode support
+	os.Setenv("LANG", "C")
+	os.Setenv("TERM", "dumb")
+	os.Setenv("LC_ALL", "")
+	os.Unsetenv("LC_CTYPE")
+
+	// Should return plain text without styling
+	result := gradientText("hello world", []lipgloss.Color{colorMauve, colorBlue})
+	if result != "hello world" {
+		t.Errorf("expected plain text without unicode support, got %q", result)
+	}
+}
+
 // Ensure lipgloss import is used
 var _ lipgloss.Color

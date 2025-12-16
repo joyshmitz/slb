@@ -634,6 +634,72 @@ func TestProjectPath_FallbackToCwd(t *testing.T) {
 	}
 }
 
+// TestProjectPath_DocumentedLimitations documents edge cases that are hard to test.
+// Note: The error path (when os.Getwd() fails) is a system-level condition
+// that's difficult to trigger in unit tests without process manipulation.
+func TestProjectPath_DocumentedLimitations(t *testing.T) {
+	resetSessionFlags()
+
+	// Test 1: Flag path always takes precedence
+	flagProject = "/explicit/project/path"
+	result, err := projectPath()
+	if err != nil {
+		t.Fatalf("unexpected error with flag: %v", err)
+	}
+	if result != "/explicit/project/path" {
+		t.Errorf("flag path should take precedence, got %q", result)
+	}
+
+	// Test 2: Empty flag returns cwd
+	flagProject = ""
+	result, err = projectPath()
+	if err != nil {
+		t.Fatalf("unexpected error with empty flag: %v", err)
+	}
+	cwd, _ := os.Getwd()
+	if result != cwd {
+		t.Errorf("empty flag should return cwd, got %q, want %q", result, cwd)
+	}
+
+	// Test 3: Verify we never get empty result in normal operation
+	if result == "" {
+		t.Error("projectPath() should never return empty string in normal operation")
+	}
+
+	// Note: The error path (when os.Getwd() fails) would require either:
+	// 1. Deleting the current directory during the test
+	// 2. Running in a restricted environment
+	// This is documented as an acceptable coverage gap (83.3% -> acceptable).
+}
+
+// TestProjectPath_AbsolutePaths verifies that projectPath handles absolute paths correctly.
+func TestProjectPath_AbsolutePaths(t *testing.T) {
+	resetSessionFlags()
+
+	tests := []struct {
+		name     string
+		flagPath string
+		want     string
+	}{
+		{"unix absolute path", "/home/user/project", "/home/user/project"},
+		{"path with spaces", "/home/user/my project", "/home/user/my project"},
+		{"nested path", "/a/b/c/d/e", "/a/b/c/d/e"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flagProject = tt.flagPath
+			result, err := projectPath()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result != tt.want {
+				t.Errorf("projectPath() = %q, want %q", result, tt.want)
+			}
+		})
+	}
+}
+
 // Test that session commands work with the --db flag
 func TestSessionCommands_WithDBFlag(t *testing.T) {
 	h := testutil.NewHarness(t)

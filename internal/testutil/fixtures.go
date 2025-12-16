@@ -119,6 +119,26 @@ func WithJustification(reason, effect, goal, safety string) RequestOption {
 	}
 }
 
+// WithDryRun sets dry run command and output.
+func WithDryRun(cmd, output string) RequestOption {
+	return func(r *db.Request) {
+		r.DryRun = &db.DryRunResult{
+			Command: cmd,
+			Output:  output,
+		}
+	}
+}
+
+// WithRequireDifferentModel sets the require different model flag.
+func WithRequireDifferentModel(required bool) RequestOption {
+	return func(r *db.Request) { r.RequireDifferentModel = required }
+}
+
+// WithMinApprovals sets the minimum approvals required.
+func WithMinApprovals(n int) RequestOption {
+	return func(r *db.Request) { r.MinApprovals = n }
+}
+
 // randHex returns a short pseudo-random hex string for test IDs.
 func randHex(n int) string {
 	const hex = "0123456789abcdef"

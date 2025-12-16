@@ -161,3 +161,93 @@ func TestAttachmentFlags_Struct(t *testing.T) {
 		t.Errorf("expected 1 screenshot, got %d", len(flags.Screenshots))
 	}
 }
+
+// TestCollectAttachments_ValidScreenshot tests loading a valid screenshot.
+func TestCollectAttachments_ValidScreenshot(t *testing.T) {
+	h := testutil.NewHarness(t)
+
+	// Create a minimal valid PNG file (1x1 pixel)
+	// PNG signature + IHDR chunk + IDAT chunk + IEND chunk
+	pngData := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+		0x00, 0x00, 0x00, 0x0D, // IHDR length
+		0x49, 0x48, 0x44, 0x52, // IHDR
+		0x00, 0x00, 0x00, 0x01, // width: 1
+		0x00, 0x00, 0x00, 0x01, // height: 1
+		0x08, 0x02, // 8-bit RGB
+		0x00, 0x00, 0x00, // compression, filter, interlace
+		0x90, 0x77, 0x53, 0xDE, // CRC
+		0x00, 0x00, 0x00, 0x0C, // IDAT length
+		0x49, 0x44, 0x41, 0x54, // IDAT
+		0x08, 0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0xFF, 0x00, 0x05, 0xFE, 0x02, 0xFE, // compressed data
+		0xA2, 0x76, 0xD0, 0x3A, // CRC
+		0x00, 0x00, 0x00, 0x00, // IEND length
+		0x49, 0x45, 0x4E, 0x44, // IEND
+		0xAE, 0x42, 0x60, 0x82, // CRC
+	}
+
+	screenshotPath := filepath.Join(h.ProjectDir, "test_screenshot.png")
+	if err := os.WriteFile(screenshotPath, pngData, 0644); err != nil {
+		t.Fatalf("failed to create test screenshot: %v", err)
+	}
+
+	flags := AttachmentFlags{
+		Screenshots: []string{screenshotPath},
+	}
+
+	attachments, err := CollectAttachments(context.Background(), flags)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(attachments))
+	}
+	// Screenshot should produce a "screenshot" type attachment
+	if attachments[0].Type != "screenshot" {
+		t.Errorf("expected type 'screenshot', got %q", attachments[0].Type)
+	}
+}
+
+// TestCollectAttachments_MixedTypes tests loading multiple attachment types.
+func TestCollectAttachments_MixedTypes(t *testing.T) {
+	h := testutil.NewHarness(t)
+
+	// Create a test file
+	filePath := filepath.Join(h.ProjectDir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("test content"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	flags := AttachmentFlags{
+		Files:    []string{filePath},
+		Contexts: []string{"echo hello"},
+	}
+
+	attachments, err := CollectAttachments(context.Background(), flags)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(attachments) != 2 {
+		t.Fatalf("expected 2 attachments, got %d", len(attachments))
+	}
+
+	// Verify we got both types
+	hasFile := false
+	hasContext := false
+	for _, a := range attachments {
+		if a.Type == "file" {
+			hasFile = true
+		}
+		if a.Type == "context" {
+			hasContext = true
+		}
+	}
+	if !hasFile {
+		t.Error("expected file attachment")
+	}
+	if !hasContext {
+		t.Error("expected context attachment")
+	}
+}

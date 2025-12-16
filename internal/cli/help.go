@@ -187,6 +187,10 @@ func gradientText(text string, colors []lipgloss.Color) string {
 	if segments == 1 {
 		return lipgloss.NewStyle().Foreground(colors[0]).Render(text)
 	}
+	// Handle single character case to avoid division by zero
+	if len(runes) <= 1 {
+		return lipgloss.NewStyle().Foreground(colors[0]).Render(text)
+	}
 
 	var b strings.Builder
 	for i, r := range runes {

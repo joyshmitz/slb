@@ -308,6 +308,155 @@ func TestGetActor(t *testing.T) {
 	})
 }
 
+// TestGetDB_HomeFallback tests the home directory fallback path.
+// Note: This path is only reachable when projectPath() returns an error,
+// which happens when os.Getwd() fails - a rare system-level condition.
+// We test the behavior when we can construct such a scenario.
+func TestGetDB_HomeFallbackDocumented(t *testing.T) {
+	// This test documents the expected behavior of the home fallback
+	// even though we can't easily trigger it in unit tests.
+	//
+	// The home fallback occurs when:
+	// 1. flagDB is empty (no explicit --db flag)
+	// 2. projectPath() returns an error OR empty string
+	//
+	// Since projectPath() only fails when os.Getwd() fails, and that's
+	// rare, this path is effectively unreachable in normal unit tests.
+	//
+	// Coverage acceptance: This is an intentional gap documented in TESTING.md
+
+	// We can at least verify the function doesn't panic with various inputs
+	origDB := flagDB
+	origProject := flagProject
+	defer func() {
+		flagDB = origDB
+		flagProject = origProject
+	}()
+
+	// Test with empty flags - should return project-based path (not home)
+	flagDB = ""
+	flagProject = ""
+	result := GetDB()
+	if result == "" {
+		t.Error("GetDB() should never return empty string")
+	}
+	if !strings.Contains(result, "state.db") && !strings.Contains(result, "history.db") {
+		t.Errorf("GetDB() returned unexpected path: %s", result)
+	}
+}
+
+// TestGetActor_HostnameFallback documents the hostname fallback behavior.
+// Note: The localhost fallback (when os.Hostname() returns "") is a rare
+// system-level condition that's difficult to trigger in unit tests.
+func TestGetActor_HostnameFallbackDocumented(t *testing.T) {
+	// Save original values
+	origActor := flagActor
+	origSLBActor := os.Getenv("SLB_ACTOR")
+	origAgentName := os.Getenv("AGENT_NAME")
+	origUser := os.Getenv("USER")
+	defer func() {
+		flagActor = origActor
+		os.Setenv("SLB_ACTOR", origSLBActor)
+		os.Setenv("AGENT_NAME", origAgentName)
+		os.Setenv("USER", origUser)
+	}()
+
+	// Test that fallback format is always user@host
+	flagActor = ""
+	os.Setenv("SLB_ACTOR", "")
+	os.Setenv("AGENT_NAME", "")
+	os.Setenv("USER", "testuser")
+
+	result := GetActor()
+
+	// Should be in format user@hostname
+	parts := strings.Split(result, "@")
+	if len(parts) != 2 {
+		t.Errorf("GetActor() = %q, expected user@hostname format", result)
+	}
+	if parts[0] != "testuser" {
+		t.Errorf("GetActor() user part = %q, expected 'testuser'", parts[0])
+	}
+	if parts[1] == "" {
+		t.Error("GetActor() hostname part should not be empty")
+	}
+
+	// Note: Testing the "localhost" fallback (when os.Hostname() returns "")
+	// would require mocking os.Hostname, which is not trivial in Go.
+	// This is documented as an acceptable coverage gap.
+}
+
+// TestGetDB_PrecedenceOrder verifies the precedence order of DB path resolution.
+func TestGetDB_PrecedenceOrder(t *testing.T) {
+	origDB := flagDB
+	origProject := flagProject
+	defer func() {
+		flagDB = origDB
+		flagProject = origProject
+	}()
+
+	h := testutil.NewHarness(t)
+
+	// 1. Explicit --db flag has highest precedence
+	flagDB = "/explicit/db/path.db"
+	flagProject = h.ProjectDir
+	result := GetDB()
+	if result != "/explicit/db/path.db" {
+		t.Errorf("explicit --db flag should take precedence, got %s", result)
+	}
+
+	// 2. Project path fallback when no explicit flag
+	flagDB = ""
+	flagProject = h.ProjectDir
+	result = GetDB()
+	expected := filepath.Join(h.ProjectDir, ".slb", "state.db")
+	if result != expected {
+		t.Errorf("project path fallback failed: got %s, want %s", result, expected)
+	}
+}
+
+// TestGetActor_PrecedenceOrder verifies the precedence order of actor resolution.
+func TestGetActor_PrecedenceOrder(t *testing.T) {
+	origActor := flagActor
+	origSLBActor := os.Getenv("SLB_ACTOR")
+	origAgentName := os.Getenv("AGENT_NAME")
+	defer func() {
+		flagActor = origActor
+		os.Setenv("SLB_ACTOR", origSLBActor)
+		os.Setenv("AGENT_NAME", origAgentName)
+	}()
+
+	// 1. Explicit --actor flag has highest precedence
+	flagActor = "explicit-actor"
+	os.Setenv("SLB_ACTOR", "env-actor")
+	os.Setenv("AGENT_NAME", "agent-actor")
+	result := GetActor()
+	if result != "explicit-actor" {
+		t.Errorf("explicit --actor flag should take precedence, got %s", result)
+	}
+
+	// 2. SLB_ACTOR env var is second
+	flagActor = ""
+	result = GetActor()
+	if result != "env-actor" {
+		t.Errorf("SLB_ACTOR should be second precedence, got %s", result)
+	}
+
+	// 3. AGENT_NAME env var is third
+	os.Setenv("SLB_ACTOR", "")
+	result = GetActor()
+	if result != "agent-actor" {
+		t.Errorf("AGENT_NAME should be third precedence, got %s", result)
+	}
+
+	// 4. Fallback to user@hostname is last
+	os.Setenv("AGENT_NAME", "")
+	result = GetActor()
+	if !strings.Contains(result, "@") {
+		t.Errorf("fallback should be user@hostname format, got %s", result)
+	}
+}
+
 func TestUnknownCommand(t *testing.T) {
 	cmd := newTestRootCmd()
 	_, _, err := executeCommand(cmd, "nonexistent-command")

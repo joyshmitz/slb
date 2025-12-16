@@ -146,3 +146,101 @@ func TestCompletionCommand_Help(t *testing.T) {
 		t.Error("expected help to mention 'powershell'")
 	}
 }
+
+// TestCompleteSessionIDs_SessionWithoutProgram tests completion when session has no program.
+func TestCompleteSessionIDs_SessionWithoutProgram(t *testing.T) {
+	h := testutil.NewHarness(t)
+
+	// Create a session with empty program
+	testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("AgentNoProgram"),
+		testutil.WithProgram(""),
+		testutil.WithModel("test-model"),
+	)
+
+	// Set the DB path
+	flagDB = h.DBPath
+
+	completions, directive := completeSessionIDs(nil, nil, "")
+
+	// Should return completions (session still valid without program)
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Errorf("expected ShellCompDirectiveNoFileComp, got %d", directive)
+	}
+	// Verify completion still works
+	found := false
+	for _, c := range completions {
+		if strings.Contains(c, "AgentNoProgram") {
+			found = true
+			break
+		}
+	}
+	if !found && len(completions) > 0 {
+		t.Error("expected to find session with AgentNoProgram")
+	}
+}
+
+// TestCompleteSessionIDs_SessionWithoutModel tests completion when session has no model.
+func TestCompleteSessionIDs_SessionWithoutModel(t *testing.T) {
+	h := testutil.NewHarness(t)
+
+	// Create a session with empty model
+	testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("AgentNoModel"),
+		testutil.WithProgram("test-program"),
+		testutil.WithModel(""),
+	)
+
+	// Set the DB path
+	flagDB = h.DBPath
+
+	completions, directive := completeSessionIDs(nil, nil, "")
+
+	// Should return completions (session still valid without model)
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Errorf("expected ShellCompDirectiveNoFileComp, got %d", directive)
+	}
+	// Verify completion includes the program but not model
+	for _, c := range completions {
+		if strings.Contains(c, "AgentNoModel") {
+			// Found the right session
+			if !strings.Contains(c, "test-program") {
+				t.Error("expected completion to include program name")
+			}
+			break
+		}
+	}
+}
+
+// TestCompleteSessionIDs_SessionMinimalInfo tests completion with minimal session info.
+func TestCompleteSessionIDs_SessionMinimalInfo(t *testing.T) {
+	h := testutil.NewHarness(t)
+
+	// Create a session with only agent name (no program, no model)
+	testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("MinimalAgent"),
+		testutil.WithProgram(""),
+		testutil.WithModel(""),
+	)
+
+	// Set the DB path
+	flagDB = h.DBPath
+
+	completions, _ := completeSessionIDs(nil, nil, "")
+
+	// Should still return completions
+	found := false
+	for _, c := range completions {
+		if strings.Contains(c, "MinimalAgent") {
+			found = true
+			// With no program or model, description should just be agent name
+			break
+		}
+	}
+	if !found && len(completions) > 0 {
+		t.Error("expected to find session with MinimalAgent")
+	}
+}

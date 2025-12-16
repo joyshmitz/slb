@@ -525,3 +525,222 @@ func TestReviewShowCommand_WithMultipleReviews(t *testing.T) {
 		t.Errorf("expected current_approvals=2, got %v", result["current_approvals"])
 	}
 }
+
+// TestReviewShowCommand_TextOutputWithReviews tests text output when reviews exist.
+func TestReviewShowCommand_TextOutputWithReviews(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	requestorSess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Requestor"),
+		testutil.WithModel("model-a"),
+	)
+	reviewerSess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Reviewer"),
+		testutil.WithModel("model-b"),
+	)
+
+	req := testutil.MakeRequest(t, h.DB, requestorSess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+	)
+
+	// Add a review with comment
+	review := &db.Review{
+		RequestID:         req.ID,
+		ReviewerSessionID: reviewerSess.ID,
+		ReviewerAgent:     reviewerSess.AgentName,
+		ReviewerModel:     reviewerSess.Model,
+		Decision:          db.DecisionApprove,
+		Comments:          "Looks good to me",
+	}
+	if err := h.DB.CreateReview(review); err != nil {
+		t.Fatalf("failed to create review: %v", err)
+	}
+
+	cmd := newTestReviewCmd(h.DBPath)
+	// Text output (no -j flag)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Text output should contain reviews section
+	if !strings.Contains(stdout, "Reviews:") {
+		t.Error("expected text output to contain 'Reviews:'")
+	}
+	if !strings.Contains(stdout, "APPROVE") {
+		t.Error("expected text output to contain 'APPROVE'")
+	}
+	if !strings.Contains(stdout, "Looks good to me") {
+		t.Error("expected text output to contain review comment")
+	}
+}
+
+// TestReviewShowCommand_TextOutputWithRejection tests text output with rejection count.
+func TestReviewShowCommand_TextOutputWithRejection(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	requestorSess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Requestor"),
+		testutil.WithModel("model-a"),
+	)
+	reviewerSess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Reviewer"),
+		testutil.WithModel("model-b"),
+	)
+
+	req := testutil.MakeRequest(t, h.DB, requestorSess,
+		testutil.WithCommand("rm -rf /", h.ProjectDir, true),
+	)
+
+	// Add a rejection review
+	review := &db.Review{
+		RequestID:         req.ID,
+		ReviewerSessionID: reviewerSess.ID,
+		ReviewerAgent:     reviewerSess.AgentName,
+		ReviewerModel:     reviewerSess.Model,
+		Decision:          db.DecisionReject,
+		Comments:          "Too dangerous",
+	}
+	if err := h.DB.CreateReview(review); err != nil {
+		t.Fatalf("failed to create review: %v", err)
+	}
+
+	cmd := newTestReviewCmd(h.DBPath)
+	// Text output (no -j flag)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Text output should contain rejections count
+	if !strings.Contains(stdout, "Rejections:") {
+		t.Error("expected text output to contain 'Rejections:'")
+	}
+}
+
+// TestReviewShowCommand_TextOutputWithDryRun tests text output with dry run info.
+func TestReviewShowCommand_TextOutputWithDryRun(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+		testutil.WithModel("test-model"),
+	)
+	req := testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+		testutil.WithDryRun("rm -rf --dry-run ./build", "Would remove: build/\n  file1.o\n  file2.o"),
+	)
+
+	cmd := newTestReviewCmd(h.DBPath)
+	// Text output (no -j flag)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Text output should contain dry run section
+	if !strings.Contains(stdout, "Dry Run:") {
+		t.Error("expected text output to contain 'Dry Run:'")
+	}
+	if !strings.Contains(stdout, "Would remove") {
+		t.Error("expected text output to contain dry run output")
+	}
+}
+
+// TestReviewShowCommand_TextOutputWithRequireDifferentModel tests text output with model requirement note.
+func TestReviewShowCommand_TextOutputWithRequireDifferentModel(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+		testutil.WithModel("test-model"),
+	)
+	req := testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+		testutil.WithRequireDifferentModel(true),
+	)
+
+	cmd := newTestReviewCmd(h.DBPath)
+	// Text output (no -j flag)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Text output should contain the model requirement note
+	if !strings.Contains(stdout, "different model") {
+		t.Error("expected text output to contain 'different model' note")
+	}
+}
+
+// TestReviewShowCommand_TextOutputWithExpiresAt tests text output includes expiry.
+func TestReviewShowCommand_TextOutputWithExpiresAt(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+		testutil.WithModel("test-model"),
+	)
+	// MakeRequest sets ExpiresAt by default
+	req := testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+	)
+
+	cmd := newTestReviewCmd(h.DBPath)
+	// Text output (no -j flag)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Text output should contain expiry
+	if !strings.Contains(stdout, "Expires:") {
+		t.Error("expected text output to contain 'Expires:'")
+	}
+}
+
+// TestReviewShowCommand_TextOutputWithSafetyArgument tests text output with safety argument.
+func TestReviewShowCommand_TextOutputWithSafetyArgument(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+		testutil.WithModel("test-model"),
+	)
+	req := testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+		testutil.WithJustification("Need to clean", "Removes files", "Clean build", "Only build directory, not source"),
+	)
+
+	cmd := newTestReviewCmd(h.DBPath)
+	// Text output (no -j flag)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Text output should contain safety argument
+	if !strings.Contains(stdout, "Safety Argument:") {
+		t.Error("expected text output to contain 'Safety Argument:'")
+	}
+}

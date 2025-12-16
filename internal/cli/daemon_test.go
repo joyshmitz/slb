@@ -253,3 +253,215 @@ func TestDaemonCommand_Help(t *testing.T) {
 		t.Error("expected help to mention 'logs' subcommand")
 	}
 }
+
+// TestDaemonLogPath_DocumentedLimitations documents coverage gaps for daemonLogPath.
+// Note: The error path (when os.UserHomeDir() fails) requires HOME env manipulation
+// which can have side effects. The function is simple enough that the gap is acceptable.
+func TestDaemonLogPath_DocumentedLimitations(t *testing.T) {
+	// The function has two paths:
+	// 1. os.UserHomeDir() succeeds -> return joined path (covered)
+	// 2. os.UserHomeDir() fails -> return error (hard to test)
+	//
+	// os.UserHomeDir() fails when:
+	// - HOME env is empty AND we can't determine home from /etc/passwd
+	// This is rare in practice and testing it would require env manipulation.
+
+	// Verify the happy path works consistently
+	result, err := daemonLogPath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should always end with daemon.log
+	if !strings.HasSuffix(result, "daemon.log") {
+		t.Errorf("expected path to end with 'daemon.log', got %q", result)
+	}
+
+	// Should contain .slb directory
+	if !strings.Contains(result, ".slb") {
+		t.Errorf("expected path to contain '.slb', got %q", result)
+	}
+}
+
+// TestTailFileLines_NegativeLines tests that negative line count defaults to 200.
+func TestTailFileLines_NegativeLines(t *testing.T) {
+	h := testutil.NewHarness(t)
+
+	testFile := filepath.Join(h.ProjectDir, "test.log")
+	content := "line1\nline2\n"
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Pass negative value - should default to 200
+	lines, err := tailFileLines(testFile, -5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should return all lines since file has fewer than 200
+	if len(lines) != 2 {
+		t.Errorf("expected 2 lines, got %d", len(lines))
+	}
+}
+
+// TestTailFileLines_LongLines tests handling of very long log lines.
+func TestTailFileLines_LongLines(t *testing.T) {
+	h := testutil.NewHarness(t)
+
+	testFile := filepath.Join(h.ProjectDir, "test.log")
+
+	// Create a file with a very long line (> default buffer size)
+	longLine := strings.Repeat("x", 70000) // 70KB line
+	content := "line1\n" + longLine + "\nline3\n"
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	lines, err := tailFileLines(testFile, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(lines) != 3 {
+		t.Errorf("expected 3 lines, got %d", len(lines))
+	}
+	if lines[1] != longLine {
+		t.Errorf("long line was truncated or corrupted")
+	}
+}
+
+// TestDaemonProjectStats_BrokenDatabase tests behavior when DB is corrupted/unreadable.
+func TestDaemonProjectStats_BrokenDatabase(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetDaemonFlags()
+
+	// Create a .slb directory with an invalid database file
+	slbDir := filepath.Join(h.ProjectDir, ".slb")
+	if err := os.MkdirAll(slbDir, 0755); err != nil {
+		t.Fatalf("failed to create .slb dir: %v", err)
+	}
+
+	// Write garbage to state.db to make it unreadable as SQLite
+	dbPath := filepath.Join(slbDir, "state.db")
+	if err := os.WriteFile(dbPath, []byte("not a valid sqlite database"), 0644); err != nil {
+		t.Fatalf("failed to create fake db: %v", err)
+	}
+
+	// Should gracefully return 0, 0 when DB is corrupted
+	pending, sessions := daemonProjectStats(h.ProjectDir)
+
+	if pending != 0 {
+		t.Errorf("expected pending=0 for corrupted DB, got %d", pending)
+	}
+	if sessions != 0 {
+		t.Errorf("expected sessions=0 for corrupted DB, got %d", sessions)
+	}
+}
+
+// TestTailFileLines_ExactLineCount tests when file has exactly N lines.
+func TestTailFileLines_ExactLineCount(t *testing.T) {
+	h := testutil.NewHarness(t)
+
+	testFile := filepath.Join(h.ProjectDir, "test.log")
+	content := "line1\nline2\nline3\n"
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Request exactly 3 lines when file has exactly 3
+	lines, err := tailFileLines(testFile, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(lines) != 3 {
+		t.Errorf("expected 3 lines, got %d", len(lines))
+	}
+	if lines[0] != "line1" || lines[1] != "line2" || lines[2] != "line3" {
+		t.Errorf("unexpected line content: %v", lines)
+	}
+}
+
+// TestTailFileLines_SingleLine tests a file with exactly one line.
+func TestTailFileLines_SingleLine(t *testing.T) {
+	h := testutil.NewHarness(t)
+
+	testFile := filepath.Join(h.ProjectDir, "test.log")
+	if err := os.WriteFile(testFile, []byte("single line\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	lines, err := tailFileLines(testFile, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(lines) != 1 {
+		t.Errorf("expected 1 line, got %d", len(lines))
+	}
+	if lines[0] != "single line" {
+		t.Errorf("expected 'single line', got %q", lines[0])
+	}
+}
+
+// TestTailFileLines_NoTrailingNewline tests file without trailing newline.
+func TestTailFileLines_NoTrailingNewline(t *testing.T) {
+	h := testutil.NewHarness(t)
+
+	testFile := filepath.Join(h.ProjectDir, "test.log")
+	// Note: no trailing newline
+	if err := os.WriteFile(testFile, []byte("line1\nline2"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	lines, err := tailFileLines(testFile, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(lines) != 2 {
+		t.Errorf("expected 2 lines, got %d", len(lines))
+	}
+}
+
+// TestDaemonProjectPath_PrecedenceOrder verifies the correct fallback order.
+func TestDaemonProjectPath_PrecedenceOrder(t *testing.T) {
+	resetDaemonFlags()
+
+	originalEnv := os.Getenv("SLB_PROJECT")
+	defer os.Setenv("SLB_PROJECT", originalEnv)
+
+	// 1. Flag takes precedence over env
+	flagProject = "/flag/path"
+	os.Setenv("SLB_PROJECT", "/env/path")
+
+	result, err := daemonProjectPath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "/flag/path" {
+		t.Errorf("flag should take precedence, got %q", result)
+	}
+
+	// 2. Env takes precedence over cwd
+	flagProject = ""
+	result, err = daemonProjectPath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "/env/path" {
+		t.Errorf("env should take precedence over cwd, got %q", result)
+	}
+
+	// 3. Cwd is final fallback
+	os.Setenv("SLB_PROJECT", "")
+	result, err = daemonProjectPath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cwd, _ := os.Getwd()
+	if result != cwd {
+		t.Errorf("should fallback to cwd, got %q, want %q", result, cwd)
+	}
+}

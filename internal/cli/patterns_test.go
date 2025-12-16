@@ -453,6 +453,43 @@ func TestPatternsListCommand_TextOutput(t *testing.T) {
 	_ = stdout // Just verify no error occurs
 }
 
+// TestPatternsListCommand_TextOutputWithDescriptions tests text output with pattern descriptions.
+func TestPatternsListCommand_TextOutputWithDescriptions(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetPatternsFlags()
+
+	// First, add a pattern with a description (reason becomes description)
+	cmd := newTestPatternsCmd(h.DBPath)
+	_, err := executeCommandCapture(t, cmd, "patterns", "add", "^test-with-desc$",
+		"-t", "dangerous",
+		"-r", "This is a test description",
+		"-j",
+	)
+	if err != nil {
+		t.Fatalf("failed to add pattern: %v", err)
+	}
+
+	// Reset flags before next command
+	resetPatternsFlags()
+
+	// List patterns in text format (no -j flag)
+	cmd = newTestPatternsCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "patterns", "list", "-t", "dangerous")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the pattern and description are in output
+	if !strings.Contains(stdout, "^test-with-desc$") {
+		t.Error("expected output to contain the pattern")
+	}
+	// The description should appear as a comment line: "    # This is a test description"
+	if !strings.Contains(stdout, "This is a test description") {
+		t.Error("expected output to contain the pattern description")
+	}
+}
+
 func TestParseTier_ValidTiers(t *testing.T) {
 	tests := []struct {
 		input    string
