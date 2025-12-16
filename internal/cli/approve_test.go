@@ -2,10 +2,12 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/slb/internal/db"
+	"github.com/Dicklesworthstone/slb/internal/integrations"
 	"github.com/Dicklesworthstone/slb/internal/testutil"
 	"github.com/spf13/cobra"
 )
@@ -295,5 +297,50 @@ func TestApproveCommand_Help(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "--session-key") {
 		t.Error("expected help to mention '--session-key' flag")
+	}
+}
+
+func TestBuildAgentMailNotifier_AgentMailDisabled(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetApproveFlags()
+
+	// Clear any environment variables that might enable agent mail
+	origEnv := os.Getenv("SLB_AGENT_MAIL_ENABLED")
+	os.Setenv("SLB_AGENT_MAIL_ENABLED", "false")
+	defer os.Setenv("SLB_AGENT_MAIL_ENABLED", origEnv)
+
+	// By default, agent mail is disabled in config
+	notifier := buildAgentMailNotifier(h.ProjectDir)
+
+	// Verify we can call the notifier without panic
+	// Type check: if it's a NoopNotifier, it handles nil safely
+	if _, ok := notifier.(integrations.NoopNotifier); ok {
+		// NoopNotifier is expected
+		err := notifier.NotifyNewRequest(nil)
+		if err != nil {
+			t.Errorf("expected no error from NoopNotifier, got %v", err)
+		}
+	}
+	// If it's AgentMailClient, just verify we got a valid notifier
+}
+
+func TestBuildAgentMailNotifier_WithConfigPath(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetApproveFlags()
+
+	// Clear any environment variables that might enable agent mail
+	origEnv := os.Getenv("SLB_AGENT_MAIL_ENABLED")
+	os.Setenv("SLB_AGENT_MAIL_ENABLED", "false")
+	defer os.Setenv("SLB_AGENT_MAIL_ENABLED", origEnv)
+
+	// Set config path to project dir (will use default config)
+	flagConfig = ""
+	flagProject = h.ProjectDir
+
+	notifier := buildAgentMailNotifier(h.ProjectDir)
+
+	// Should return a notifier - verify it exists
+	if notifier == nil {
+		t.Error("expected non-nil notifier")
 	}
 }

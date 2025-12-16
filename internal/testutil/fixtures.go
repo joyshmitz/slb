@@ -107,6 +107,18 @@ func WithExpiresAt(t time.Time) RequestOption {
 	return func(r *db.Request) { r.ExpiresAt = &t }
 }
 
+// WithJustification sets justification fields.
+func WithJustification(reason, effect, goal, safety string) RequestOption {
+	return func(r *db.Request) {
+		r.Justification = db.Justification{
+			Reason:         reason,
+			ExpectedEffect: effect,
+			Goal:           goal,
+			SafetyArgument: safety,
+		}
+	}
+}
+
 // randHex returns a short pseudo-random hex string for test IDs.
 func randHex(n int) string {
 	const hex = "0123456789abcdef"

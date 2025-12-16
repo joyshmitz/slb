@@ -418,3 +418,110 @@ func TestReviewListCommand_AllProjects(t *testing.T) {
 		t.Error("expected at least 1 request with --all flag")
 	}
 }
+
+func TestReviewShowCommand_WithJustificationFields(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+		testutil.WithModel("test-model"),
+	)
+	req := testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+		testutil.WithJustification("Need to clean build", "Removes stale files", "Clean build", "Build dir only"),
+		testutil.WithRisk(db.RiskTierDangerous),
+	)
+
+	cmd := newTestReviewCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Text output should contain justification fields
+	if !strings.Contains(stdout, "Reason:") {
+		t.Error("expected text output to contain 'Reason:'")
+	}
+	if !strings.Contains(stdout, "Expected Effect:") {
+		t.Error("expected text output to contain 'Expected Effect:'")
+	}
+	if !strings.Contains(stdout, "Goal:") {
+		t.Error("expected text output to contain 'Goal:'")
+	}
+}
+
+func TestReviewShowCommand_WithMultipleReviews(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	requestorSess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Requestor"),
+		testutil.WithModel("model-a"),
+	)
+	reviewer1Sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Reviewer1"),
+		testutil.WithModel("model-b"),
+	)
+	reviewer2Sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Reviewer2"),
+		testutil.WithModel("model-c"),
+	)
+
+	req := testutil.MakeRequest(t, h.DB, requestorSess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+	)
+
+	// Add two reviews
+	review1 := &db.Review{
+		RequestID:         req.ID,
+		ReviewerSessionID: reviewer1Sess.ID,
+		ReviewerAgent:     reviewer1Sess.AgentName,
+		ReviewerModel:     reviewer1Sess.Model,
+		Decision:          db.DecisionApprove,
+		Comments:          "Approved by reviewer 1",
+	}
+	if err := h.DB.CreateReview(review1); err != nil {
+		t.Fatalf("failed to create review1: %v", err)
+	}
+
+	review2 := &db.Review{
+		RequestID:         req.ID,
+		ReviewerSessionID: reviewer2Sess.ID,
+		ReviewerAgent:     reviewer2Sess.AgentName,
+		ReviewerModel:     reviewer2Sess.Model,
+		Decision:          db.DecisionApprove,
+		Comments:          "Approved by reviewer 2",
+	}
+	if err := h.DB.CreateReview(review2); err != nil {
+		t.Fatalf("failed to create review2: %v", err)
+	}
+
+	cmd := newTestReviewCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID, "-j")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nstdout: %s", err, stdout)
+	}
+
+	reviews, ok := result["reviews"].([]any)
+	if !ok {
+		t.Fatal("expected reviews to be an array")
+	}
+	if len(reviews) != 2 {
+		t.Errorf("expected 2 reviews, got %d", len(reviews))
+	}
+	if result["current_approvals"].(float64) != 2 {
+		t.Errorf("expected current_approvals=2, got %v", result["current_approvals"])
+	}
+}

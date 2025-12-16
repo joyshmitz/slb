@@ -224,6 +224,24 @@ func TestGetDB(t *testing.T) {
 			t.Errorf("GetDB() = %v, want %v", got, expected)
 		}
 	})
+
+	t.Run("falls back to cwd when project flag empty", func(t *testing.T) {
+		flagDB = ""
+		flagProject = ""
+
+		// Change to temp directory - projectPath() will return cwd
+		origWd, _ := os.Getwd()
+		tmpDir := os.TempDir()
+		_ = os.Chdir(tmpDir)
+		defer func() { _ = os.Chdir(origWd) }()
+
+		got := GetDB()
+		// When in a directory, GetDB returns path based on cwd
+		expected := filepath.Join(tmpDir, ".slb", "state.db")
+		if got != expected {
+			t.Errorf("GetDB() = %v, want %v", got, expected)
+		}
+	})
 }
 
 func TestGetActor(t *testing.T) {
@@ -231,10 +249,12 @@ func TestGetActor(t *testing.T) {
 	origActor := flagActor
 	origSLBActor := os.Getenv("SLB_ACTOR")
 	origAgentName := os.Getenv("AGENT_NAME")
+	origUser := os.Getenv("USER")
 	defer func() {
 		flagActor = origActor
 		os.Setenv("SLB_ACTOR", origSLBActor)
 		os.Setenv("AGENT_NAME", origAgentName)
+		os.Setenv("USER", origUser)
 	}()
 
 	t.Run("explicit actor flag", func(t *testing.T) {
@@ -272,6 +292,18 @@ func TestGetActor(t *testing.T) {
 		got := GetActor()
 		if !strings.Contains(got, "@") {
 			t.Errorf("GetActor() = %v, expected user@hostname format", got)
+		}
+	})
+
+	t.Run("fallback with empty USER", func(t *testing.T) {
+		flagActor = ""
+		os.Setenv("SLB_ACTOR", "")
+		os.Setenv("AGENT_NAME", "")
+		os.Setenv("USER", "")
+		got := GetActor()
+		// Should fallback to "unknown@hostname"
+		if !strings.HasPrefix(got, "unknown@") {
+			t.Errorf("GetActor() = %v, expected to start with 'unknown@'", got)
 		}
 	})
 }
