@@ -353,3 +353,30 @@ func TestRollbackKubernetesCaptureAndRestoreWithFakeKubectl(t *testing.T) {
 func execLookPath(name string) (string, error) {
 	return exec.LookPath(name)
 }
+
+func TestBytesTrimSpace(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []byte
+		want  []byte
+	}{
+		{"empty", []byte{}, []byte{}},
+		{"no whitespace", []byte("hello"), []byte("hello")},
+		{"leading space", []byte("  hello"), []byte("hello")},
+		{"trailing space", []byte("hello  "), []byte("hello")},
+		{"both sides", []byte("  hello  "), []byte("hello")},
+		{"leading tab", []byte("\thello"), []byte("hello")},
+		{"trailing newline", []byte("hello\n"), []byte("hello")},
+		{"mixed whitespace", []byte(" \t\nhello world\n\t "), []byte("hello world")},
+		{"only whitespace", []byte("   \t\n  "), []byte{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := bytesTrimSpace(tc.input)
+			if string(got) != string(tc.want) {
+				t.Errorf("bytesTrimSpace(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
