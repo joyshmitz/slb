@@ -1,6 +1,8 @@
 package testutil
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"path/filepath"
 	"testing"
 	"time"
@@ -139,12 +141,11 @@ func WithMinApprovals(n int) RequestOption {
 	return func(r *db.Request) { r.MinApprovals = n }
 }
 
-// randHex returns a short pseudo-random hex string for test IDs.
+// randHex returns a cryptographically random hex string for unique test IDs.
 func randHex(n int) string {
-	const hex = "0123456789abcdef"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = hex[time.Now().UnixNano()%int64(len(hex))]
+	b := make([]byte, (n+1)/2) // Each byte produces 2 hex chars
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
 	}
-	return string(b)
+	return hex.EncodeToString(b)[:n]
 }
