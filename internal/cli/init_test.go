@@ -321,3 +321,140 @@ func TestAddToGitignore_AlreadyPresent(t *testing.T) {
 		t.Errorf("expected 1 .slb/ entry, got %d", count)
 	}
 }
+
+func TestAddToGitignore_AlreadyPresentSlbWithoutSlash(t *testing.T) {
+	tmpDir := t.TempDir()
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+
+	// Create .gitignore with .slb (without trailing slash) already present
+	existing := "node_modules/\n.slb\n*.log\n"
+	if err := os.WriteFile(gitignorePath, []byte(existing), 0644); err != nil {
+		t.Fatalf("writing .gitignore failed: %v", err)
+	}
+
+	err := addToGitignore(gitignorePath)
+	if err != nil {
+		t.Fatalf("addToGitignore failed: %v", err)
+	}
+
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("reading .gitignore failed: %v", err)
+	}
+
+	// Count occurrences of .slb or .slb/
+	count := 0
+	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == ".slb/" || line == ".slb" {
+			count++
+		}
+	}
+
+	if count != 1 {
+		t.Errorf("expected 1 .slb entry, got %d", count)
+	}
+}
+
+func TestAddToGitignore_ExistingFileNoNewline(t *testing.T) {
+	tmpDir := t.TempDir()
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+
+	// Create .gitignore without trailing newline
+	existing := "node_modules/\n*.log" // No trailing newline
+	if err := os.WriteFile(gitignorePath, []byte(existing), 0644); err != nil {
+		t.Fatalf("writing .gitignore failed: %v", err)
+	}
+
+	err := addToGitignore(gitignorePath)
+	if err != nil {
+		t.Fatalf("addToGitignore failed: %v", err)
+	}
+
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("reading .gitignore failed: %v", err)
+	}
+
+	// Should have added newline before .slb/
+	if !strings.Contains(string(content), "*.log\n") {
+		t.Error("expected newline to be added before .slb/ entry")
+	}
+	if !strings.Contains(string(content), ".slb/") {
+		t.Error(".gitignore missing .slb/ entry")
+	}
+}
+
+func TestInitCommand_YAMLOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	defer os.Chdir(origDir)
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+
+	// Reset flags
+	flagInitForce = false
+	flagOutput = "yaml"
+	flagJSON = false
+
+	err := runInit(nil, nil)
+	if err != nil {
+		t.Fatalf("runInit with YAML output failed: %v", err)
+	}
+
+	// Verify directory was created
+	slbDir := filepath.Join(tmpDir, ".slb")
+	if _, err := os.Stat(slbDir); err != nil {
+		t.Errorf(".slb directory not created: %v", err)
+	}
+}
+
+func TestInitCommand_UnsupportedOutputFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+	origDir, _ := os.Getwd()
+	defer os.Chdir(origDir)
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+
+	// Reset flags with unsupported format
+	flagInitForce = false
+	flagOutput = "unsupported_format"
+	flagJSON = false
+
+	err := runInit(nil, nil)
+	if err == nil {
+		t.Fatal("expected error for unsupported output format")
+	}
+	if !strings.Contains(err.Error(), "unsupported format") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestAddToGitignore_EmptyExistingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+
+	// Create empty .gitignore file
+	if err := os.WriteFile(gitignorePath, []byte(""), 0644); err != nil {
+		t.Fatalf("writing empty .gitignore failed: %v", err)
+	}
+
+	err := addToGitignore(gitignorePath)
+	if err != nil {
+		t.Fatalf("addToGitignore failed: %v", err)
+	}
+
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("reading .gitignore failed: %v", err)
+	}
+
+	if !strings.Contains(string(content), ".slb/") {
+		t.Error(".gitignore missing .slb/ entry")
+	}
+}
