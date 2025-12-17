@@ -89,17 +89,27 @@ func (e *PatternEngine) LoadDefaultPatterns() {
 		`DROP\s+SCHEMA`,
 		`TRUNCATE\s+TABLE`,
 		`DELETE\s+FROM\s+[\w.` + "`" + `"\[\]]+\s*(;|$|--|/\*)`,
-		// Infrastructure destruction
-		`^terraform\s+destroy\s*$`,    // terraform destroy with no args
-		`^terraform\s+destroy\s+[^-]`, // terraform destroy without -target flag
+		// Infrastructure destruction - terraform destroy without -target is critical
+		`^terraform\s+destroy\s*$`,              // terraform destroy with no args
+		`^terraform\s+destroy\s+-auto-approve`,  // terraform destroy -auto-approve
+		`^terraform\s+destroy\s+[^-]`,           // terraform destroy <resource> (no flag)
 		`^kubectl\s+delete\s+(node|namespace|pv|pvc)\b`,
 		`^helm\s+uninstall.*--all`,
 		`^docker\s+system\s+prune\s+-a`,
-		// Git force push (not with-lease) - matches --force but not --force-with-lease
+		// Git force push - both --force and -f (but not --force-with-lease)
 		`^git\s+push\s+.*--force($|\s)`,
+		`^git\s+push\s+.*-f($|\s)`,
 		// Cloud resource destruction
 		`^aws\s+.*terminate-instances`,
 		`^gcloud.*delete.*--quiet`,
+		// Disk/filesystem destruction
+		`\bdd\b.*of=/dev/`,          // dd writing to device
+		`^mkfs`,                      // mkfs.* commands
+		`^fdisk`,                     // partition manipulation
+		`^parted`,                    // partition manipulation
+		// System file permission changes
+		`^chmod\s+.*/(etc|usr|var|boot|bin|sbin)`,
+		`^chown\s+.*/(etc|usr|var|boot|bin|sbin)`,
 	}, "builtin")
 
 	// Dangerous patterns (1 approval)
