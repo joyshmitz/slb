@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -485,5 +486,230 @@ func TestVerifier_NilApprovalExpiresAt(t *testing.T) {
 	}
 	if result.Reason != "approval_expires_at is not set" {
 		t.Errorf("expected reason 'approval_expires_at is not set', got %q", result.Reason)
+	}
+}
+
+// Tests for RevertExecutingOnFailure
+
+func TestVerifier_RevertExecutingOnFailure_MissingRequestID(t *testing.T) {
+	database := setupTestDB(t)
+	v := NewVerifier(database)
+
+	err := v.RevertExecutingOnFailure("")
+	if err == nil {
+		t.Fatal("expected error for missing request_id")
+	}
+	if err.Error() != "request_id is required" {
+		t.Errorf("expected error 'request_id is required', got %q", err.Error())
+	}
+}
+
+func TestVerifier_RevertExecutingOnFailure_RequestNotFound(t *testing.T) {
+	database := setupTestDB(t)
+	v := NewVerifier(database)
+
+	err := v.RevertExecutingOnFailure("nonexistent-id")
+	if err == nil {
+		t.Fatal("expected error for nonexistent request")
+	}
+}
+
+func TestVerifier_RevertExecutingOnFailure_WrongStatus(t *testing.T) {
+	database := setupTestDB(t)
+	v := NewVerifier(database)
+
+	createTestSession(t, database, "sess1")
+	createTestRequest(t, database, "req1", "sess1", db.StatusApproved, 1)
+
+	// Try to revert when status is APPROVED (not EXECUTING)
+	err := v.RevertExecutingOnFailure("req1")
+	if err == nil {
+		t.Fatal("expected error when request is not executing")
+	}
+	if err.Error() != "request status is approved, expected executing" {
+		t.Errorf("expected status error, got %q", err.Error())
+	}
+}
+
+func TestVerifier_RevertExecutingOnFailure_TransitionNotAllowed(t *testing.T) {
+	// NOTE: The DB state machine does not currently allow EXECUTING -> APPROVED transition.
+	// This test verifies that RevertExecutingOnFailure correctly returns the DB error.
+	// If this behavior should change, update canTransition in db/requests.go.
+	database := setupTestDB(t)
+	v := NewVerifier(database)
+
+	createTestSession(t, database, "sess1")
+	createTestRequest(t, database, "req1", "sess1", db.StatusApproved, 1)
+
+	createTestSession(t, database, "reviewer-sess")
+	createTestReview(t, database, "req1", "reviewer-sess", db.DecisionApprove)
+
+	// First mark as executing
+	_, err := v.VerifyAndMarkExecuting("req1", "sess1")
+	if err != nil {
+		t.Fatalf("VerifyAndMarkExecuting failed: %v", err)
+	}
+
+	// Verify it's executing
+	req, _ := database.GetRequest("req1")
+	if req.Status != db.StatusExecuting {
+		t.Fatalf("expected status EXECUTING, got %s", req.Status)
+	}
+
+	// Attempt to revert - should fail due to DB state machine constraints
+	err = v.RevertExecutingOnFailure("req1")
+	if err == nil {
+		t.Fatal("expected error for executing -> approved transition")
+	}
+	// The error should mention the invalid transition
+	if !strings.Contains(err.Error(), "invalid state transition") {
+		t.Errorf("expected 'invalid state transition' error, got: %v", err)
+	}
+
+	// Status should remain EXECUTING
+	req, _ = database.GetRequest("req1")
+	if req.Status != db.StatusExecuting {
+		t.Errorf("expected status to remain %s, got %s", db.StatusExecuting, req.Status)
+	}
+}
+
+func TestVerifier_RevertExecutingOnFailure_ExpiredApproval(t *testing.T) {
+	// NOTE: The DB state machine does not currently allow EXECUTING -> TIMEOUT transition.
+	// This test verifies that the function correctly hits the expired approval path
+	// and returns an error from the DB layer.
+	database := setupTestDB(t)
+	v := NewVerifier(database)
+
+	createTestSession(t, database, "sess1")
+
+	// Create request with approval that will expire
+	now := time.Now().UTC()
+	expiresAt := now.Add(30 * time.Minute)
+	approvalExpiresAt := now.Add(-1 * time.Minute) // Already expired
+
+	request := &db.Request{
+		ID:          "req-expired-approval",
+		ProjectPath: "/test/project",
+		Command: db.CommandSpec{
+			Raw:  "rm -rf /tmp/test",
+			Cwd:  "/tmp",
+			Hash: "testhash123",
+		},
+		RiskTier:           db.RiskTierDangerous,
+		RequestorSessionID: "sess1",
+		RequestorAgent:     "TestAgent",
+		RequestorModel:     "test-model",
+		Justification: db.Justification{
+			Reason: "Testing execution",
+		},
+		Status:            db.StatusExecuting, // Already executing
+		MinApprovals:      1,
+		ExpiresAt:         &expiresAt,
+		ApprovalExpiresAt: &approvalExpiresAt, // Already expired
+	}
+	if err := database.CreateRequest(request); err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+
+	// Revert attempts to transition to TIMEOUT due to expired approval
+	// This fails because the DB doesn't allow EXECUTING -> TIMEOUT
+	err := v.RevertExecutingOnFailure("req-expired-approval")
+	if err == nil {
+		t.Fatal("expected error for executing -> timeout transition")
+	}
+	if !strings.Contains(err.Error(), "invalid state transition") {
+		t.Errorf("expected 'invalid state transition' error, got: %v", err)
+	}
+
+	// Status should remain EXECUTING
+	req, _ := database.GetRequest("req-expired-approval")
+	if req.Status != db.StatusExecuting {
+		t.Errorf("expected status to remain %s, got %s", db.StatusExecuting, req.Status)
+	}
+}
+
+func TestVerifier_RevertExecutingOnFailure_NilApprovalExpiry(t *testing.T) {
+	// NOTE: The DB state machine does not currently allow EXECUTING -> APPROVED transition.
+	// This test verifies that the function correctly handles nil ApprovalExpiresAt
+	// (treating it as "not expired") and attempts the revert, which fails at the DB layer.
+	database := setupTestDB(t)
+	v := NewVerifier(database)
+
+	createTestSession(t, database, "sess1")
+
+	// Create request without approval expiry
+	now := time.Now().UTC()
+	expiresAt := now.Add(30 * time.Minute)
+
+	request := &db.Request{
+		ID:          "req-nil-expiry",
+		ProjectPath: "/test/project",
+		Command: db.CommandSpec{
+			Raw:  "echo test",
+			Cwd:  "/tmp",
+			Hash: "testhash",
+		},
+		RiskTier:           db.RiskTierCaution,
+		RequestorSessionID: "sess1",
+		RequestorAgent:     "TestAgent",
+		RequestorModel:     "test-model",
+		Justification: db.Justification{
+			Reason: "Testing",
+		},
+		Status:            db.StatusExecuting,
+		MinApprovals:      1,
+		ExpiresAt:         &expiresAt,
+		ApprovalExpiresAt: nil, // No approval expiry - treated as "not expired"
+	}
+	if err := database.CreateRequest(request); err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+
+	// Revert attempts to transition to APPROVED but fails due to DB constraints
+	err := v.RevertExecutingOnFailure("req-nil-expiry")
+	if err == nil {
+		t.Fatal("expected error for executing -> approved transition")
+	}
+	if !strings.Contains(err.Error(), "invalid state transition") {
+		t.Errorf("expected 'invalid state transition' error, got: %v", err)
+	}
+
+	// Status should remain EXECUTING
+	req, _ := database.GetRequest("req-nil-expiry")
+	if req.Status != db.StatusExecuting {
+		t.Errorf("expected status to remain %s, got %s", db.StatusExecuting, req.Status)
+	}
+}
+
+func TestVerifier_VerifyAndMarkExecuting_NotAllowed(t *testing.T) {
+	database := setupTestDB(t)
+	v := NewVerifier(database)
+
+	createTestSession(t, database, "sess1")
+	// Create with PENDING status - should not be allowed
+	createTestRequest(t, database, "req1", "sess1", db.StatusPending, 1)
+
+	result, err := v.VerifyAndMarkExecuting("req1", "sess1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Allowed {
+		t.Error("expected Allowed=false for pending request")
+	}
+
+	// Status should still be pending
+	req, _ := database.GetRequest("req1")
+	if req.Status != db.StatusPending {
+		t.Errorf("expected status to remain %s, got %s", db.StatusPending, req.Status)
+	}
+}
+
+func TestVerifier_MarkExecutionComplete_RequestNotFound(t *testing.T) {
+	database := setupTestDB(t)
+	v := NewVerifier(database)
+
+	err := v.MarkExecutionComplete("nonexistent-id", 0, true)
+	if err == nil {
+		t.Fatal("expected error for nonexistent request")
 	}
 }
