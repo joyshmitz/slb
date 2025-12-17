@@ -629,6 +629,90 @@ func TestTimelineRenderExpanded(t *testing.T) {
 	}
 }
 
+func TestTimelineRenderExpandedRejected(t *testing.T) {
+	now := time.Now()
+	tl := NewTimeline().
+		AddEvent("created", now, "user1", "").
+		AddEvent("rejected", now, "user2", "Not safe").
+		WithCurrent("rejected").
+		AsExpanded()
+
+	result := tl.Render()
+	if result == "" {
+		t.Error("Render returned empty string for rejected state")
+	}
+}
+
+func TestTimelineRenderExpandedFailed(t *testing.T) {
+	now := time.Now()
+	tl := NewTimeline().
+		AddEvent("created", now, "user1", "").
+		AddEvent("failed", now, "", "Error occurred").
+		WithCurrent("failed").
+		AsExpanded()
+
+	result := tl.Render()
+	if result == "" {
+		t.Error("Render returned empty string for failed state")
+	}
+}
+
+func TestTimelineRenderExpandedPending(t *testing.T) {
+	now := time.Now()
+	tl := NewTimeline().
+		AddEvent("created", now, "", "").
+		AddEvent("pending", now, "", "").
+		WithCurrent("pending").
+		AsExpanded()
+
+	result := tl.Render()
+	if result == "" {
+		t.Error("Render returned empty string for pending state")
+	}
+}
+
+func TestTimelineRenderExpandedExecuting(t *testing.T) {
+	now := time.Now()
+	tl := NewTimeline().
+		AddEvent("created", now, "", "").
+		AddEvent("executing", now, "executor", "").
+		WithCurrent("executing").
+		AsExpanded()
+
+	result := tl.Render()
+	if result == "" {
+		t.Error("Render returned empty string for executing state")
+	}
+}
+
+func TestTimelineRenderExpandedTimeout(t *testing.T) {
+	now := time.Now()
+	tl := NewTimeline().
+		AddEvent("created", now, "", "").
+		AddEvent("timeout", now, "", "Timed out").
+		WithCurrent("timeout").
+		AsExpanded()
+
+	result := tl.Render()
+	if result == "" {
+		t.Error("Render returned empty string for timeout state")
+	}
+}
+
+func TestTimelineRenderExpandedEscalated(t *testing.T) {
+	now := time.Now()
+	tl := NewTimeline().
+		AddEvent("created", now, "", "").
+		AddEvent("escalated", now, "system", "").
+		WithCurrent("escalated").
+		AsExpanded()
+
+	result := tl.Render()
+	if result == "" {
+		t.Error("Render returned empty string for escalated state")
+	}
+}
+
 func TestTimelineHasReachedState(t *testing.T) {
 	tl := NewTimeline().
 		AddEvent("created", time.Now(), "", "").
