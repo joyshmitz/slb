@@ -1,6 +1,7 @@
 package patterns
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -795,4 +796,296 @@ func TestModelUpdateQForBack(t *testing.T) {
 	if !backCalled {
 		t.Error("'q' should trigger OnBack")
 	}
+}
+
+// TestLoadPatternChanges tests the database loading function
+func TestLoadPatternChanges(t *testing.T) {
+	h := newTestHarness(t)
+
+	// Create some pattern changes in the database
+	createTestPatternChange(t, h.db, "rm -rf", db.PatternChangeTypeRemove, db.PatternChangeStatusPending)
+	createTestPatternChange(t, h.db, "sudo", db.PatternChangeTypeSuggest, db.PatternChangeStatusApproved)
+
+	rows, total, err := loadPatternChanges(h.projectPath, "")
+	if err != nil {
+		t.Fatalf("loadPatternChanges failed: %v", err)
+	}
+
+	if total != 2 {
+		t.Errorf("expected total 2, got %d", total)
+	}
+	if len(rows) != 2 {
+		t.Errorf("expected 2 rows, got %d", len(rows))
+	}
+}
+
+func TestLoadPatternChangesWithFilter(t *testing.T) {
+	h := newTestHarness(t)
+
+	createTestPatternChange(t, h.db, "rm -rf", db.PatternChangeTypeRemove, db.PatternChangeStatusPending)
+	createTestPatternChange(t, h.db, "sudo", db.PatternChangeTypeSuggest, db.PatternChangeStatusApproved)
+
+	// Filter by remove type
+	rows, total, err := loadPatternChanges(h.projectPath, db.PatternChangeTypeRemove)
+	if err != nil {
+		t.Fatalf("loadPatternChanges with filter failed: %v", err)
+	}
+
+	if total != 1 {
+		t.Errorf("expected total 1 with filter, got %d", total)
+	}
+	if len(rows) > 0 && rows[0].ChangeType != db.PatternChangeTypeRemove {
+		t.Errorf("expected remove type, got %s", rows[0].ChangeType)
+	}
+}
+
+func TestLoadPatternChangesNonexistentDB(t *testing.T) {
+	_, _, err := loadPatternChanges("/nonexistent/path", "")
+	if err == nil {
+		t.Error("expected error for nonexistent database")
+	}
+}
+
+func TestLoadPatternChangesEmptyDB(t *testing.T) {
+	h := newTestHarness(t)
+
+	rows, total, err := loadPatternChanges(h.projectPath, "")
+	if err != nil {
+		t.Fatalf("loadPatternChanges on empty DB failed: %v", err)
+	}
+
+	if total != 0 {
+		t.Errorf("expected total 0, got %d", total)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected 0 rows, got %d", len(rows))
+	}
+}
+
+func TestPerformActionApprove(t *testing.T) {
+	h := newTestHarness(t)
+
+	change := createTestPatternChange(t, h.db, "rm -rf", db.PatternChangeTypeRemove, db.PatternChangeStatusPending)
+
+	err := performAction(h.projectPath, change.ID, "approve")
+	if err != nil {
+		t.Fatalf("performAction approve failed: %v", err)
+	}
+
+	// Verify the change was approved
+	updated, err := h.db.GetPatternChange(change.ID)
+	if err != nil {
+		t.Fatalf("failed to get updated pattern change: %v", err)
+	}
+	if updated.Status != db.PatternChangeStatusApproved {
+		t.Errorf("expected status approved, got %s", updated.Status)
+	}
+}
+
+func TestPerformActionReject(t *testing.T) {
+	h := newTestHarness(t)
+
+	change := createTestPatternChange(t, h.db, "sudo", db.PatternChangeTypeSuggest, db.PatternChangeStatusPending)
+
+	err := performAction(h.projectPath, change.ID, "reject")
+	if err != nil {
+		t.Fatalf("performAction reject failed: %v", err)
+	}
+
+	// Verify the change was rejected
+	updated, err := h.db.GetPatternChange(change.ID)
+	if err != nil {
+		t.Fatalf("failed to get updated pattern change: %v", err)
+	}
+	if updated.Status != db.PatternChangeStatusRejected {
+		t.Errorf("expected status rejected, got %s", updated.Status)
+	}
+}
+
+func TestPerformActionUnknown(t *testing.T) {
+	h := newTestHarness(t)
+
+	change := createTestPatternChange(t, h.db, "test", db.PatternChangeTypeRemove, db.PatternChangeStatusPending)
+
+	err := performAction(h.projectPath, change.ID, "unknown")
+	if err == nil {
+		t.Fatal("expected error for unknown action")
+	}
+	if !strings.Contains(err.Error(), "unknown action") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestPerformActionNonexistentDB(t *testing.T) {
+	err := performAction("/nonexistent/path", 1, "approve")
+	if err == nil {
+		t.Error("expected error for nonexistent database")
+	}
+}
+
+func TestLoadDataCmd(t *testing.T) {
+	h := newTestHarness(t)
+
+	createTestPatternChange(t, h.db, "test", db.PatternChangeTypeRemove, db.PatternChangeStatusPending)
+
+	cmd := loadDataCmd(h.projectPath, "")
+	if cmd == nil {
+		t.Fatal("loadDataCmd should return non-nil command")
+	}
+
+	// Execute the command to get the message
+	msg := cmd()
+	dm, ok := msg.(dataMsg)
+	if !ok {
+		t.Fatalf("expected dataMsg, got %T", msg)
+	}
+
+	if dm.err != nil {
+		t.Errorf("unexpected error: %v", dm.err)
+	}
+	if dm.totalCount != 1 {
+		t.Errorf("expected totalCount 1, got %d", dm.totalCount)
+	}
+}
+
+func TestLoadDataCmdWithFilter(t *testing.T) {
+	h := newTestHarness(t)
+
+	createTestPatternChange(t, h.db, "rm -rf", db.PatternChangeTypeRemove, db.PatternChangeStatusPending)
+	createTestPatternChange(t, h.db, "sudo", db.PatternChangeTypeSuggest, db.PatternChangeStatusPending)
+
+	cmd := loadDataCmd(h.projectPath, db.PatternChangeTypeRemove)
+	msg := cmd()
+	dm := msg.(dataMsg)
+
+	if dm.totalCount != 1 {
+		t.Errorf("expected totalCount 1 with filter, got %d", dm.totalCount)
+	}
+}
+
+func TestApproveCmd(t *testing.T) {
+	h := newTestHarness(t)
+
+	change := createTestPatternChange(t, h.db, "test", db.PatternChangeTypeRemove, db.PatternChangeStatusPending)
+
+	cmd := approveCmd(h.projectPath, change.ID)
+	if cmd == nil {
+		t.Fatal("approveCmd should return non-nil command")
+	}
+
+	// Execute the command
+	msg := cmd()
+	am, ok := msg.(actionMsg)
+	if !ok {
+		t.Fatalf("expected actionMsg, got %T", msg)
+	}
+
+	if am.action != "approve" {
+		t.Errorf("expected action 'approve', got %q", am.action)
+	}
+	if am.id != change.ID {
+		t.Errorf("expected id %d, got %d", change.ID, am.id)
+	}
+	if !am.success {
+		t.Errorf("expected success=true, got error: %v", am.err)
+	}
+}
+
+func TestRejectCmd(t *testing.T) {
+	h := newTestHarness(t)
+
+	change := createTestPatternChange(t, h.db, "test", db.PatternChangeTypeSuggest, db.PatternChangeStatusPending)
+
+	cmd := rejectCmd(h.projectPath, change.ID)
+	if cmd == nil {
+		t.Fatal("rejectCmd should return non-nil command")
+	}
+
+	// Execute the command
+	msg := cmd()
+	am, ok := msg.(actionMsg)
+	if !ok {
+		t.Fatalf("expected actionMsg, got %T", msg)
+	}
+
+	if am.action != "reject" {
+		t.Errorf("expected action 'reject', got %q", am.action)
+	}
+	if !am.success {
+		t.Errorf("expected success=true, got error: %v", am.err)
+	}
+}
+
+func TestTickCmd(t *testing.T) {
+	cmd := tickCmd()
+	if cmd == nil {
+		t.Error("tickCmd should return non-nil command")
+	}
+}
+
+// TestRenderFilterBarErrorMessage tests the error display path in renderFilterBar
+func TestRenderFilterBarErrorMessage(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.message = "Error occurred"
+	m.messageType = "error"
+
+	bar := m.renderFilterBar()
+	if !strings.Contains(bar, "Error occurred") {
+		t.Error("filter bar should show error message")
+	}
+}
+
+// Test harness for database tests
+type testHarness struct {
+	projectPath string
+	db          *db.DB
+}
+
+func newTestHarness(t *testing.T) *testHarness {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	slbDir := tmpDir + "/.slb"
+
+	// Create .slb directory structure
+	if err := mkdir(slbDir); err != nil {
+		t.Fatalf("failed to create .slb dir: %v", err)
+	}
+
+	dbPath := slbDir + "/state.db"
+	database, err := db.OpenAndMigrate(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	t.Cleanup(func() {
+		database.Close()
+	})
+
+	return &testHarness{
+		projectPath: tmpDir,
+		db:          database,
+	}
+}
+
+func mkdir(path string) error {
+	return os.MkdirAll(path, 0755)
+}
+
+func createTestPatternChange(t *testing.T, database *db.DB, pattern, changeType, status string) *db.PatternChange {
+	t.Helper()
+
+	change := &db.PatternChange{
+		Tier:       "CRITICAL",
+		Pattern:    pattern,
+		ChangeType: changeType,
+		Reason:     "test reason",
+		Status:     status,
+	}
+
+	if err := database.CreatePatternChange(change); err != nil {
+		t.Fatalf("failed to create pattern change: %v", err)
+	}
+	return change
 }

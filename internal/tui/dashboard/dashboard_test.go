@@ -1,12 +1,16 @@
 package dashboard
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Dicklesworthstone/slb/internal/db"
 	"github.com/Dicklesworthstone/slb/internal/tui/components"
 )
 
@@ -356,5 +360,354 @@ func TestKeyMapFullHelp(t *testing.T) {
 	if len(help) == 0 {
 		t.Error("FullHelp should return binding groups")
 	}
+}
+
+// TestLoadData tests the database loading function
+func TestLoadData(t *testing.T) {
+	h := newTestHarness(t)
+
+	// Create session and requests
+	sess := createTestSession(t, h.db, h.projectPath)
+	createTestRequest(t, h.db, sess, "rm -rf /tmp", "critical")
+
+	agents, pending, activity, err := loadData(h.projectPath)
+	if err != nil {
+		t.Fatalf("loadData failed: %v", err)
+	}
+
+	if len(agents) != 1 {
+		t.Errorf("expected 1 agent, got %d", len(agents))
+	}
+	if len(pending) != 1 {
+		t.Errorf("expected 1 pending, got %d", len(pending))
+	}
+	// Activity is derived from pending
+	if len(activity) != 1 {
+		t.Errorf("expected 1 activity, got %d", len(activity))
+	}
+}
+
+func TestLoadDataEmptyDB(t *testing.T) {
+	h := newTestHarness(t)
+
+	agents, pending, activity, err := loadData(h.projectPath)
+	if err != nil {
+		t.Fatalf("loadData on empty DB failed: %v", err)
+	}
+
+	if len(agents) != 0 {
+		t.Errorf("expected 0 agents, got %d", len(agents))
+	}
+	if len(pending) != 0 {
+		t.Errorf("expected 0 pending, got %d", len(pending))
+	}
+	if len(activity) != 0 {
+		t.Errorf("expected 0 activity, got %d", len(activity))
+	}
+}
+
+func TestLoadDataNonexistentDB(t *testing.T) {
+	agents, pending, activity, err := loadData("/nonexistent/path")
+	// Should return error but empty data, not panic
+	if err == nil {
+		t.Error("expected error for nonexistent database")
+	}
+	if len(agents) != 0 {
+		t.Errorf("expected 0 agents with error, got %d", len(agents))
+	}
+	if len(pending) != 0 {
+		t.Errorf("expected 0 pending with error, got %d", len(pending))
+	}
+	if len(activity) != 0 {
+		t.Errorf("expected 0 activity with error, got %d", len(activity))
+	}
+}
+
+func TestLoadDataWithMultipleRequests(t *testing.T) {
+	h := newTestHarness(t)
+
+	sess := createTestSession(t, h.db, h.projectPath)
+	for i := 0; i < 15; i++ {
+		createTestRequest(t, h.db, sess, "test cmd", "caution")
+	}
+
+	_, pending, activity, err := loadData(h.projectPath)
+	if err != nil {
+		t.Fatalf("loadData failed: %v", err)
+	}
+
+	if len(pending) != 15 {
+		t.Errorf("expected 15 pending, got %d", len(pending))
+	}
+	// Activity is capped at 10
+	if len(activity) != 10 {
+		t.Errorf("expected 10 activity (capped), got %d", len(activity))
+	}
+}
+
+func TestLoadCmd(t *testing.T) {
+	h := newTestHarness(t)
+
+	createTestSession(t, h.db, h.projectPath)
+
+	cmd := loadCmd(h.projectPath)
+	if cmd == nil {
+		t.Fatal("loadCmd should return non-nil command")
+	}
+
+	// Execute the command
+	msg := cmd()
+	dm, ok := msg.(dataMsg)
+	if !ok {
+		t.Fatalf("expected dataMsg, got %T", msg)
+	}
+
+	if dm.err != nil {
+		t.Errorf("unexpected error: %v", dm.err)
+	}
+}
+
+func TestTickCmd(t *testing.T) {
+	cmd := tickCmd()
+	if cmd == nil {
+		t.Error("tickCmd should return non-nil command")
+	}
+}
+
+func TestMoveSelection(t *testing.T) {
+	m := New("")
+	m.ready = true
+	m.height = 24
+	m.width = 80
+
+	// Setup data
+	m.agents = []components.AgentInfo{{Name: "A"}, {Name: "B"}, {Name: "C"}}
+	m.pending = []requestRow{{ID: "1"}, {ID: "2"}}
+	m.activity = []string{"a", "b", "c", "d"}
+
+	// Test moving down in agents panel
+	m.focus = focusAgents
+	m.agentSel = 0
+	m.moveSelection(1)
+	if m.agentSel != 1 {
+		t.Errorf("expected agentSel 1 after down, got %d", m.agentSel)
+	}
+
+	// Test moving up
+	m.moveSelection(-1)
+	if m.agentSel != 0 {
+		t.Errorf("expected agentSel 0 after up, got %d", m.agentSel)
+	}
+
+	// Test pending panel
+	m.focus = focusPending
+	m.pendingSel = 0
+	m.moveSelection(1)
+	if m.pendingSel != 1 {
+		t.Errorf("expected pendingSel 1 after down, got %d", m.pendingSel)
+	}
+
+	// Test activity panel
+	m.focus = focusActivity
+	m.activitySel = 0
+	m.moveSelection(1)
+	if m.activitySel != 1 {
+		t.Errorf("expected activitySel 1 after down, got %d", m.activitySel)
+	}
+}
+
+func TestVisibleRows(t *testing.T) {
+	m := New("")
+	m.height = 30
+
+	rows := m.visibleRows()
+	// Should return some reasonable number based on height
+	if rows <= 0 {
+		t.Errorf("visibleRows should return positive value, got %d", rows)
+	}
+
+	// Very small height
+	m.height = 10
+	rows = m.visibleRows()
+	if rows < 1 {
+		t.Errorf("visibleRows should return at least 1, got %d", rows)
+	}
+}
+
+func TestRenderPendingPanel(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.height = 24
+	m.ready = true
+
+	// Empty state
+	panel := m.renderPendingPanel(40, 10)
+	if panel == "" {
+		t.Error("renderPendingPanel should not return empty string")
+	}
+
+	// With data
+	m.pending = []requestRow{
+		{ID: "req-1", Tier: "critical", Command: "rm -rf /", Requestor: "Agent1", CreatedAt: time.Now()},
+	}
+	m.focus = focusPending
+	m.pendingSel = 0
+
+	panel = m.renderPendingPanel(40, 10)
+	if panel == "" {
+		t.Error("renderPendingPanel with data should not be empty")
+	}
+}
+
+func TestRenderActivityPanel(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.height = 24
+	m.ready = true
+
+	// Empty state
+	panel := m.renderActivityPanel(40, 10)
+	if panel == "" {
+		t.Error("renderActivityPanel should not return empty string")
+	}
+
+	// With data
+	m.activity = []string{"Event 1", "Event 2", "Event 3"}
+	m.focus = focusActivity
+	m.activitySel = 1
+
+	panel = m.renderActivityPanel(40, 10)
+	if panel == "" {
+		t.Error("renderActivityPanel with data should not be empty")
+	}
+}
+
+func TestRenderAgentsPanel(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.height = 24
+	m.ready = true
+
+	// Empty state
+	panel := m.renderAgentsPanel(40, 10)
+	if panel == "" {
+		t.Error("renderAgentsPanel should not return empty string")
+	}
+
+	// With data
+	m.agents = []components.AgentInfo{
+		{Name: "Agent1", Status: components.AgentStatusActive, Program: "test", Model: "model"},
+		{Name: "Agent2", Status: components.AgentStatusIdle, Program: "test", Model: "model"},
+	}
+	m.focus = focusAgents
+	m.agentSel = 0
+
+	panel = m.renderAgentsPanel(40, 10)
+	if panel == "" {
+		t.Error("renderAgentsPanel with data should not be empty")
+	}
+}
+
+func TestRenderFooter(t *testing.T) {
+	m := New("")
+	m.width = 80
+
+	// Normal footer
+	footer := m.renderFooter()
+	if footer == "" {
+		t.Error("renderFooter should not return empty string")
+	}
+
+	// With error
+	m.lastErr = &testError{}
+	footer = m.renderFooter()
+	if !strings.Contains(footer, "error") {
+		t.Error("footer should show error")
+	}
+}
+
+type testError struct{}
+
+func (e *testError) Error() string { return "test error" }
+
+// Test harness for database tests
+type testHarness struct {
+	projectPath string
+	db          *db.DB
+}
+
+func newTestHarness(t *testing.T) *testHarness {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	slbDir := tmpDir + "/.slb"
+
+	if err := os.MkdirAll(slbDir, 0755); err != nil {
+		t.Fatalf("failed to create .slb dir: %v", err)
+	}
+
+	dbPath := slbDir + "/state.db"
+	database, err := db.OpenAndMigrate(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	t.Cleanup(func() {
+		database.Close()
+	})
+
+	return &testHarness{
+		projectPath: tmpDir,
+		db:          database,
+	}
+}
+
+func createTestSession(t *testing.T, database *db.DB, projectPath string) *db.Session {
+	t.Helper()
+
+	sess := &db.Session{
+		ID:          "sess-" + randHex(6),
+		AgentName:   "TestAgent",
+		Program:     "test",
+		Model:       "test-model",
+		ProjectPath: projectPath,
+	}
+
+	if err := database.CreateSession(sess); err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+	return sess
+}
+
+func createTestRequest(t *testing.T, database *db.DB, sess *db.Session, cmd string, tier string) *db.Request {
+	t.Helper()
+
+	exp := time.Now().Add(30 * time.Minute)
+	req := &db.Request{
+		ID:                 "req-" + randHex(6),
+		ProjectPath:        sess.ProjectPath,
+		Command:            db.CommandSpec{Raw: cmd, Cwd: "/tmp", Shell: true},
+		RiskTier:           db.RiskTier(tier),
+		RequestorSessionID: sess.ID,
+		RequestorAgent:     sess.AgentName,
+		RequestorModel:     sess.Model,
+		Justification:      db.Justification{Reason: "test"},
+		Status:             db.StatusPending,
+		MinApprovals:       1,
+		ExpiresAt:          &exp,
+	}
+
+	if err := database.CreateRequest(req); err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	return req
+}
+
+func randHex(n int) string {
+	b := make([]byte, (n+1)/2)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return hex.EncodeToString(b)[:n]
 }
 

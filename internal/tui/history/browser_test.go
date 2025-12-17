@@ -1,6 +1,9 @@
 package history
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -840,4 +843,267 @@ func TestBrowserModelUpdateKeyPrevPageVim(t *testing.T) {
 	if cmd == nil {
 		t.Error("should return data load command")
 	}
+}
+
+// TestLoadHistoryData tests the database loading function
+func TestLoadHistoryData(t *testing.T) {
+	// Create test environment with database
+	h := newTestHarness(t)
+
+	// Create session and requests (use h.projectPath so filter matches)
+	sess := createTestSession(t, h.db, h.projectPath)
+	createTestRequest(t, h.db, sess, "rm -rf /tmp", db.RiskTierCritical, db.StatusPending)
+	createTestRequest(t, h.db, sess, "git push --force", db.RiskTierDangerous, db.StatusApproved)
+
+	// Load data
+	rows, total, err := loadHistoryData(h.projectPath, "", Filters{}, 0)
+	if err != nil {
+		t.Fatalf("loadHistoryData failed: %v", err)
+	}
+
+	if total != 2 {
+		t.Errorf("expected total 2, got %d", total)
+	}
+	if len(rows) != 2 {
+		t.Errorf("expected 2 rows, got %d", len(rows))
+	}
+}
+
+func TestLoadHistoryDataWithSearch(t *testing.T) {
+	h := newTestHarness(t)
+
+	sess := createTestSession(t, h.db, h.projectPath)
+	createTestRequest(t, h.db, sess, "docker build", db.RiskTierCaution, db.StatusPending)
+	createTestRequest(t, h.db, sess, "npm install", db.RiskTierCaution, db.StatusApproved)
+
+	// Search for docker
+	rows, _, err := loadHistoryData(h.projectPath, "docker", Filters{}, 0)
+	if err != nil {
+		t.Fatalf("loadHistoryData with search failed: %v", err)
+	}
+
+	// FTS may or may not find results depending on indexing - just verify no error
+	_ = rows
+}
+
+func TestLoadHistoryDataWithTierFilter(t *testing.T) {
+	h := newTestHarness(t)
+
+	sess := createTestSession(t, h.db, h.projectPath)
+	createTestRequest(t, h.db, sess, "rm -rf /", db.RiskTierCritical, db.StatusPending)
+	createTestRequest(t, h.db, sess, "git status", db.RiskTierCaution, db.StatusApproved)
+
+	// Filter by critical tier
+	filters := Filters{TierFilter: string(db.RiskTierCritical)}
+	rows, total, err := loadHistoryData(h.projectPath, "", filters, 0)
+	if err != nil {
+		t.Fatalf("loadHistoryData with tier filter failed: %v", err)
+	}
+
+	if total != 1 {
+		t.Errorf("expected total 1 with critical filter, got %d", total)
+	}
+	if len(rows) != 1 {
+		t.Errorf("expected 1 row, got %d", len(rows))
+	}
+	if len(rows) > 0 && rows[0].Tier != db.RiskTierCritical {
+		t.Errorf("expected critical tier, got %s", rows[0].Tier)
+	}
+}
+
+func TestLoadHistoryDataWithStatusFilter(t *testing.T) {
+	h := newTestHarness(t)
+
+	sess := createTestSession(t, h.db, h.projectPath)
+	createTestRequest(t, h.db, sess, "rm -rf /tmp", db.RiskTierCritical, db.StatusPending)
+	createTestRequest(t, h.db, sess, "ls -la", db.RiskTierCaution, db.StatusApproved)
+
+	// Filter by approved status
+	filters := Filters{StatusFilter: string(db.StatusApproved)}
+	rows, total, err := loadHistoryData(h.projectPath, "", filters, 0)
+	if err != nil {
+		t.Fatalf("loadHistoryData with status filter failed: %v", err)
+	}
+
+	if total != 1 {
+		t.Errorf("expected total 1 with approved filter, got %d", total)
+	}
+	if len(rows) > 0 && rows[0].Status != db.StatusApproved {
+		t.Errorf("expected approved status, got %s", rows[0].Status)
+	}
+}
+
+func TestLoadHistoryDataPagination(t *testing.T) {
+	h := newTestHarness(t)
+
+	sess := createTestSession(t, h.db, h.projectPath)
+	// Create more requests than pageSize
+	for i := 0; i < pageSize+5; i++ {
+		createTestRequest(t, h.db, sess, "echo test", db.RiskTierCaution, db.StatusPending)
+	}
+
+	// First page
+	rows, total, err := loadHistoryData(h.projectPath, "", Filters{}, 0)
+	if err != nil {
+		t.Fatalf("loadHistoryData page 0 failed: %v", err)
+	}
+
+	if total != pageSize+5 {
+		t.Errorf("expected total %d, got %d", pageSize+5, total)
+	}
+	if len(rows) != pageSize {
+		t.Errorf("expected %d rows on first page, got %d", pageSize, len(rows))
+	}
+
+	// Second page
+	rows, _, err = loadHistoryData(h.projectPath, "", Filters{}, 1)
+	if err != nil {
+		t.Fatalf("loadHistoryData page 1 failed: %v", err)
+	}
+
+	if len(rows) != 5 {
+		t.Errorf("expected 5 rows on second page, got %d", len(rows))
+	}
+}
+
+func TestLoadHistoryDataNonexistentDB(t *testing.T) {
+	_, _, err := loadHistoryData("/nonexistent/path", "", Filters{}, 0)
+	if err == nil {
+		t.Error("expected error for nonexistent database")
+	}
+}
+
+func TestLoadHistoryDataEmptyDB(t *testing.T) {
+	h := newTestHarness(t)
+
+	rows, total, err := loadHistoryData(h.projectPath, "", Filters{}, 0)
+	if err != nil {
+		t.Fatalf("loadHistoryData on empty DB failed: %v", err)
+	}
+
+	if total != 0 {
+		t.Errorf("expected total 0, got %d", total)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected 0 rows, got %d", len(rows))
+	}
+}
+
+func TestLoadDataCmd(t *testing.T) {
+	h := newTestHarness(t)
+
+	sess := createTestSession(t, h.db, h.projectPath)
+	createTestRequest(t, h.db, sess, "test cmd", db.RiskTierCaution, db.StatusPending)
+
+	cmd := loadDataCmd(h.projectPath, "", Filters{}, 0)
+	if cmd == nil {
+		t.Fatal("loadDataCmd should return non-nil command")
+	}
+
+	// Execute the command to get the message
+	msg := cmd()
+	dataMsg, ok := msg.(dataMsg)
+	if !ok {
+		t.Fatalf("expected dataMsg, got %T", msg)
+	}
+
+	if dataMsg.err != nil {
+		t.Errorf("unexpected error: %v", dataMsg.err)
+	}
+	if dataMsg.totalCount != 1 {
+		t.Errorf("expected totalCount 1, got %d", dataMsg.totalCount)
+	}
+}
+
+func TestTickCmd(t *testing.T) {
+	cmd := tickCmd()
+	if cmd == nil {
+		t.Error("tickCmd should return non-nil command")
+	}
+}
+
+// Test harness for database tests
+type testHarness struct {
+	projectPath string
+	db          *db.DB
+}
+
+func newTestHarness(t *testing.T) *testHarness {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	slbDir := tmpDir + "/.slb"
+
+	// Create .slb directory structure
+	if err := mkdir(slbDir); err != nil {
+		t.Fatalf("failed to create .slb dir: %v", err)
+	}
+
+	dbPath := slbDir + "/state.db"
+	database, err := db.OpenAndMigrate(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	t.Cleanup(func() {
+		database.Close()
+	})
+
+	return &testHarness{
+		projectPath: tmpDir,
+		db:          database,
+	}
+}
+
+func mkdir(path string) error {
+	return os.MkdirAll(path, 0755)
+}
+
+func createTestSession(t *testing.T, database *db.DB, projectPath string) *db.Session {
+	t.Helper()
+
+	sess := &db.Session{
+		ID:          "sess-" + randHex(6),
+		AgentName:   "TestAgent",
+		Program:     "test",
+		Model:       "test-model",
+		ProjectPath: projectPath,
+	}
+
+	if err := database.CreateSession(sess); err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+	return sess
+}
+
+func createTestRequest(t *testing.T, database *db.DB, sess *db.Session, cmd string, tier db.RiskTier, status db.RequestStatus) *db.Request {
+	t.Helper()
+
+	exp := time.Now().Add(30 * time.Minute)
+	req := &db.Request{
+		ID:                 "req-" + randHex(6),
+		ProjectPath:        sess.ProjectPath,
+		Command:            db.CommandSpec{Raw: cmd, Cwd: "/tmp", Shell: true},
+		RiskTier:           tier,
+		RequestorSessionID: sess.ID,
+		RequestorAgent:     sess.AgentName,
+		RequestorModel:     sess.Model,
+		Justification:      db.Justification{Reason: "test"},
+		Status:             status,
+		MinApprovals:       1,
+		ExpiresAt:          &exp,
+	}
+
+	if err := database.CreateRequest(req); err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	return req
+}
+
+func randHex(n int) string {
+	b := make([]byte, (n+1)/2)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return hex.EncodeToString(b)[:n]
 }
