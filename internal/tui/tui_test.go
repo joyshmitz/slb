@@ -2,8 +2,12 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/Dicklesworthstone/slb/internal/db"
+	"github.com/Dicklesworthstone/slb/internal/tui/request"
 )
 
 func TestNew(t *testing.T) {
@@ -174,5 +178,434 @@ func TestPlaceholderModelView(t *testing.T) {
 	}
 	if len(view) < 10 {
 		t.Error("View should return a meaningful message")
+	}
+}
+
+// ============== Init Tests for Different Views ==============
+
+func TestModelInitHistory(t *testing.T) {
+	m := New()
+	m.view = ViewHistory
+	cmd := m.Init()
+	// Init may return commands for history view
+	_ = cmd
+}
+
+func TestModelInitPatterns(t *testing.T) {
+	m := New()
+	m.view = ViewPatterns
+	cmd := m.Init()
+	// Init may return commands for patterns view
+	_ = cmd
+}
+
+func TestModelInitRequestDetail(t *testing.T) {
+	m := New()
+	m.view = ViewRequestDetail
+	// detail is nil, should just return nil
+	cmd := m.Init()
+	if cmd != nil {
+		t.Error("Init with nil detail should return nil")
+	}
+}
+
+func TestModelInitRequestDetailWithModel(t *testing.T) {
+	m := New()
+	m.view = ViewRequestDetail
+	// Create a mock request
+	req := &db.Request{
+		ID:        "test-123",
+		Command:   db.CommandSpec{Raw: "test command"},
+		RiskTier:  db.RiskTierCaution,
+		Status:    db.StatusPending,
+		CreatedAt: time.Now(),
+	}
+	m.detail = request.NewDetailModel(req, nil)
+	cmd := m.Init()
+	// Should return the detail's init command
+	_ = cmd
+}
+
+// ============== View Tests for Different Views ==============
+
+func TestModelViewHistory(t *testing.T) {
+	m := New()
+	m.view = ViewHistory
+	view := m.View()
+	if view == "" {
+		t.Error("History view should return non-empty string")
+	}
+}
+
+func TestModelViewPatterns(t *testing.T) {
+	m := New()
+	m.view = ViewPatterns
+	view := m.View()
+	if view == "" {
+		t.Error("Patterns view should return non-empty string")
+	}
+}
+
+func TestModelViewRequestDetailNil(t *testing.T) {
+	m := New()
+	m.view = ViewRequestDetail
+	m.detail = nil
+	view := m.View()
+	if view != "Loading..." {
+		t.Errorf("expected 'Loading...' for nil detail, got '%s'", view)
+	}
+}
+
+func TestModelViewRequestDetailWithModel(t *testing.T) {
+	m := New()
+	m.view = ViewRequestDetail
+	req := &db.Request{
+		ID:        "test-123",
+		Command:   db.CommandSpec{Raw: "test command"},
+		RiskTier:  db.RiskTierCaution,
+		Status:    db.StatusPending,
+		CreatedAt: time.Now(),
+	}
+	m.detail = request.NewDetailModel(req, nil)
+	// Set window size for proper rendering
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.view = ViewRequestDetail // Reset view after update
+	view := m.View()
+	if view == "" {
+		t.Error("RequestDetail view should return non-empty string")
+	}
+}
+
+func TestModelViewDashboardNil(t *testing.T) {
+	m := New()
+	m.dashboard = nil
+	view := m.View()
+	if view != "Loading..." {
+		t.Errorf("expected 'Loading...' for nil dashboard, got '%s'", view)
+	}
+}
+
+// ============== Navigation Tests ==============
+
+func TestNavigateBackFromRequestDetail(t *testing.T) {
+	m := New()
+	m.view = ViewRequestDetail
+	req := &db.Request{
+		ID:        "test-123",
+		Command:   db.CommandSpec{Raw: "test command"},
+		RiskTier:  db.RiskTierCaution,
+		Status:    db.StatusPending,
+		CreatedAt: time.Now(),
+	}
+	m.detail = request.NewDetailModel(req, nil)
+
+	// Simulate 'esc' key press to navigate back
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	um := updated.(Model)
+	if um.view != ViewDashboard {
+		t.Errorf("expected view to be ViewDashboard, got %d", um.view)
+	}
+}
+
+func TestNavigateBackFromHistoryEsc(t *testing.T) {
+	m := New()
+	m.view = ViewHistory
+
+	// Simulate 'esc' key press to navigate back
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	um := updated.(Model)
+	if um.view != ViewDashboard {
+		t.Errorf("expected view to be ViewDashboard, got %d", um.view)
+	}
+}
+
+func TestNavigateBackFromPatternsB(t *testing.T) {
+	m := New()
+	m.view = ViewPatterns
+
+	// Simulate 'b' key press to navigate back
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	um := updated.(Model)
+	if um.view != ViewDashboard {
+		t.Errorf("expected view to be ViewDashboard, got %d", um.view)
+	}
+}
+
+func TestNavigateBackFromRequestDetailB(t *testing.T) {
+	m := New()
+	m.view = ViewRequestDetail
+
+	// Simulate 'b' key press to navigate back
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	um := updated.(Model)
+	if um.view != ViewDashboard {
+		t.Errorf("expected view to be ViewDashboard, got %d", um.view)
+	}
+}
+
+func TestNavigateToRequestDetailEmptyID(t *testing.T) {
+	m := New()
+	// Dashboard with no selected request - enter should not navigate
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// Try to navigate to detail with no selection
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	um := updated.(Model)
+	// Should still be on dashboard since no request selected
+	if um.view != ViewDashboard {
+		t.Errorf("expected view to remain ViewDashboard, got %d", um.view)
+	}
+}
+
+// ============== forwardUpdate Tests ==============
+
+func TestForwardUpdateHistory(t *testing.T) {
+	m := New()
+	m.view = ViewHistory
+	// Forward a message to history view
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	um := updated.(Model)
+	if um.view != ViewHistory {
+		t.Errorf("expected view to remain ViewHistory, got %d", um.view)
+	}
+}
+
+func TestForwardUpdatePatterns(t *testing.T) {
+	m := New()
+	m.view = ViewPatterns
+	// Forward a message to patterns view
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	um := updated.(Model)
+	if um.view != ViewPatterns {
+		t.Errorf("expected view to remain ViewPatterns, got %d", um.view)
+	}
+}
+
+func TestForwardUpdateRequestDetail(t *testing.T) {
+	m := New()
+	m.view = ViewRequestDetail
+	req := &db.Request{
+		ID:        "test-123",
+		Command:   db.CommandSpec{Raw: "test command"},
+		RiskTier:  db.RiskTierCaution,
+		Status:    db.StatusPending,
+		CreatedAt: time.Now(),
+	}
+	m.detail = request.NewDetailModel(req, nil)
+	// Forward a window size message to detail view
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	um := updated.(Model)
+	if um.view != ViewRequestDetail {
+		t.Errorf("expected view to remain ViewRequestDetail, got %d", um.view)
+	}
+}
+
+func TestForwardUpdateRequestDetailNil(t *testing.T) {
+	m := New()
+	m.view = ViewRequestDetail
+	m.detail = nil
+	// Forward a message with nil detail - should not panic
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	um := updated.(Model)
+	if um.view != ViewRequestDetail {
+		t.Errorf("expected view to remain ViewRequestDetail, got %d", um.view)
+	}
+}
+
+// ============== handleNavigation Tests ==============
+
+func TestHandleNavigationToDashboard(t *testing.T) {
+	m := New()
+	m.view = ViewPatterns
+
+	// Manually trigger navigation via navigateMsg
+	updated, _ := m.Update(navigateMsg{view: ViewDashboard})
+	um := updated.(Model)
+	if um.view != ViewDashboard {
+		t.Errorf("expected view to be ViewDashboard, got %d", um.view)
+	}
+	if um.dashboard == nil {
+		t.Error("dashboard should be reinitialized")
+	}
+}
+
+func TestHandleNavigationToRequestDetailWithID(t *testing.T) {
+	m := New()
+	// Navigation to detail with an ID (will fail to load since no DB)
+	updated, _ := m.Update(navigateMsg{view: ViewRequestDetail, requestID: "nonexistent-id"})
+	um := updated.(Model)
+	// Should fall back to dashboard since request not found
+	if um.view != ViewDashboard {
+		t.Errorf("expected fallback to ViewDashboard, got %d", um.view)
+	}
+}
+
+func TestHandleNavigationToRequestDetailNoID(t *testing.T) {
+	m := New()
+	// Navigation to detail without ID - should fall back to dashboard
+	updated, _ := m.Update(navigateMsg{view: ViewRequestDetail, requestID: ""})
+	um := updated.(Model)
+	if um.view != ViewDashboard {
+		t.Errorf("expected fallback to ViewDashboard, got %d", um.view)
+	}
+}
+
+// ============== Callback Setup Tests ==============
+
+func TestSetupDashboardCallbacksNil(t *testing.T) {
+	m := New()
+	m.dashboard = nil
+	// Should not panic
+	m.setupDashboardCallbacks()
+}
+
+func TestSetupDashboardCallbacks(t *testing.T) {
+	m := New()
+	m.setupDashboardCallbacks()
+	// Verify callbacks are set
+	if m.dashboard.OnPatterns == nil {
+		t.Error("OnPatterns callback should be set")
+	}
+	if m.dashboard.OnHistory == nil {
+		t.Error("OnHistory callback should be set")
+	}
+}
+
+func TestSetupDetailCallbacksNil(t *testing.T) {
+	m := New()
+	m.detail = nil
+	// Should not panic
+	m.setupDetailCallbacks()
+}
+
+func TestSetupDetailCallbacks(t *testing.T) {
+	m := New()
+	req := &db.Request{
+		ID:        "test-123",
+		Command:   db.CommandSpec{Raw: "test command"},
+		RiskTier:  db.RiskTierCaution,
+		Status:    db.StatusPending,
+		CreatedAt: time.Now(),
+	}
+	m.detail = request.NewDetailModel(req, nil)
+	m.setupDetailCallbacks()
+
+	// Verify callbacks are set
+	if m.detail.OnBack == nil {
+		t.Error("OnBack callback should be set")
+	}
+	if m.detail.OnApprove == nil {
+		t.Error("OnApprove callback should be set")
+	}
+	if m.detail.OnReject == nil {
+		t.Error("OnReject callback should be set")
+	}
+}
+
+func TestSetupDetailCallbacksOnBack(t *testing.T) {
+	m := New()
+	req := &db.Request{
+		ID:        "test-123",
+		Command:   db.CommandSpec{Raw: "test command"},
+		RiskTier:  db.RiskTierCaution,
+		Status:    db.StatusPending,
+		CreatedAt: time.Now(),
+	}
+	m.detail = request.NewDetailModel(req, nil)
+	m.setupDetailCallbacks()
+
+	// Test OnBack callback
+	cmd := m.detail.OnBack()
+	if cmd == nil {
+		t.Error("OnBack should return a command")
+	}
+	// Execute the command to get the message
+	msg := cmd()
+	if navMsg, ok := msg.(navigateMsg); ok {
+		if navMsg.view != ViewDashboard {
+			t.Errorf("OnBack should navigate to dashboard, got view %d", navMsg.view)
+		}
+	} else {
+		t.Errorf("OnBack should return navigateMsg, got %T", msg)
+	}
+}
+
+func TestSetupHistoryCallbacks(t *testing.T) {
+	m := New()
+	m.setupHistoryCallbacks()
+	// Verify callbacks are set
+	if m.history.OnBack == nil {
+		t.Error("OnBack callback should be set")
+	}
+	if m.history.OnSelect == nil {
+		t.Error("OnSelect callback should be set")
+	}
+}
+
+func TestSetupPatternsCallbacks(t *testing.T) {
+	m := New()
+	m.setupPatternsCallbacks()
+	// Verify callback is set
+	if m.patterns.OnBack == nil {
+		t.Error("OnBack callback should be set")
+	}
+}
+
+// ============== Approve/Reject Request Tests ==============
+
+func TestApproveRequestCommand(t *testing.T) {
+	m := New()
+	cmd := m.approveRequest("test-123", "approved")
+	if cmd == nil {
+		t.Error("approveRequest should return a command")
+	}
+	// Execute the command
+	msg := cmd()
+	if navMsg, ok := msg.(navigateMsg); ok {
+		if navMsg.view != ViewDashboard {
+			t.Errorf("approveRequest should navigate to dashboard, got view %d", navMsg.view)
+		}
+	}
+}
+
+func TestRejectRequestCommand(t *testing.T) {
+	m := New()
+	cmd := m.rejectRequest("test-123", "rejected")
+	if cmd == nil {
+		t.Error("rejectRequest should return a command")
+	}
+	// Execute the command
+	msg := cmd()
+	if navMsg, ok := msg.(navigateMsg); ok {
+		if navMsg.view != ViewDashboard {
+			t.Errorf("rejectRequest should navigate to dashboard, got view %d", navMsg.view)
+		}
+	}
+}
+
+// ============== Other Message Types ==============
+
+func TestUpdateWithOtherMessage(t *testing.T) {
+	m := New()
+	// Test with a generic message type
+	type customMsg struct{}
+	updated, _ := m.Update(customMsg{})
+	if updated == nil {
+		t.Error("Update should return non-nil model")
+	}
+}
+
+func TestUpdateKeyPressOnDashboardNonNavigation(t *testing.T) {
+	m := New()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// Press a non-navigation key on dashboard
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	um := updated.(Model)
+	if um.view != ViewDashboard {
+		t.Errorf("non-navigation key should keep dashboard view, got %d", um.view)
 	}
 }
