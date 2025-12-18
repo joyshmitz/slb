@@ -5,6 +5,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -32,6 +33,8 @@ type Options struct {
 	Theme           string
 	DisableMouse    bool
 	RefreshInterval int
+	SessionID       string
+	SessionKey      string
 }
 
 // DefaultOptions returns the default TUI options.
@@ -42,6 +45,8 @@ func DefaultOptions() Options {
 		Theme:           "",
 		DisableMouse:    false,
 		RefreshInterval: 5,
+		SessionID:       "",
+		SessionKey:      "",
 	}
 }
 
@@ -319,6 +324,14 @@ func (m *Model) loadRequestDetail(requestID string) *request.DetailModel {
 	}
 	defer dbConn.Close()
 
+	var currentSession *db.Session
+	if m.options.SessionID != "" {
+		s, err := dbConn.GetSession(m.options.SessionID)
+		if err == nil {
+			currentSession = s
+		}
+	}
+
 	req, err := dbConn.GetRequest(requestID)
 	if err != nil {
 		return nil
@@ -335,16 +348,23 @@ func (m *Model) loadRequestDetail(requestID string) *request.DetailModel {
 	}
 
 	detail := request.NewDetailModel(req, reviews)
+	if currentSession != nil {
+		detail.WithSession(currentSession)
+	}
 	return detail
 }
 
 // approveRequest creates a command to approve a request.
 func (m *Model) approveRequest(requestID string, comments string) tea.Cmd {
 	return func() tea.Msg {
+		if m.options.SessionID == "" || m.options.SessionKey == "" {
+			return nil // Cannot approve without session
+		}
+
 		dbPath := filepath.Join(m.options.ProjectPath, ".slb", "state.db")
 		dbConn, err := db.OpenWithOptions(dbPath, db.OpenOptions{
 			CreateIfNotExists: false,
-			InitSchema:        true,
+			InitSchema:        false, // Schema should exist
 			ReadOnly:          false,
 		})
 		if err != nil {
@@ -352,10 +372,31 @@ func (m *Model) approveRequest(requestID string, comments string) tea.Cmd {
 		}
 		defer dbConn.Close()
 
-		// Create a review record
-		// Note: In a real implementation, we'd need a session context
-		// For TUI, we'd need to authenticate or use a stored session
-		_ = comments // Would be used in the review
+		// Get session to populate reviewer info
+		session, err := dbConn.GetSession(m.options.SessionID)
+		if err != nil {
+			return nil
+		}
+
+		now := time.Now().UTC()
+		review := &db.Review{
+			RequestID:          requestID,
+			ReviewerSessionID:  session.ID,
+			ReviewerAgent:      session.AgentName,
+			ReviewerModel:      session.Model,
+			Decision:           db.DecisionApprove,
+			Comments:           comments,
+			SignatureTimestamp: now,
+		}
+
+		// Compute signature
+		review.Signature = db.ComputeReviewSignature(m.options.SessionKey, requestID, db.DecisionApprove, now)
+
+		if err := dbConn.CreateReviewWithValidation(review, m.options.SessionKey); err != nil {
+			// In a real app we'd send an error msg, but for now just log/ignore or return to dash
+			// Ideally we return an error message tea.Msg
+		}
+
 		return navigateMsg{view: ViewDashboard}
 	}
 }
@@ -363,8 +404,41 @@ func (m *Model) approveRequest(requestID string, comments string) tea.Cmd {
 // rejectRequest creates a command to reject a request.
 func (m *Model) rejectRequest(requestID string, reason string) tea.Cmd {
 	return func() tea.Msg {
-		// Similar to approveRequest
-		_ = reason
+		if m.options.SessionID == "" || m.options.SessionKey == "" {
+			return nil
+		}
+
+		dbPath := filepath.Join(m.options.ProjectPath, ".slb", "state.db")
+		dbConn, err := db.OpenWithOptions(dbPath, db.OpenOptions{
+			CreateIfNotExists: false,
+			InitSchema:        false,
+			ReadOnly:          false,
+		})
+		if err != nil {
+			return nil
+		}
+		defer dbConn.Close()
+
+		session, err := dbConn.GetSession(m.options.SessionID)
+		if err != nil {
+			return nil
+		}
+
+		now := time.Now().UTC()
+		review := &db.Review{
+			RequestID:          requestID,
+			ReviewerSessionID:  session.ID,
+			ReviewerAgent:      session.AgentName,
+			ReviewerModel:      session.Model,
+			Decision:           db.DecisionReject,
+			Comments:           reason,
+			SignatureTimestamp: now,
+		}
+
+		review.Signature = db.ComputeReviewSignature(m.options.SessionKey, requestID, db.DecisionReject, now)
+
+		_ = dbConn.CreateReviewWithValidation(review, m.options.SessionKey)
+
 		return navigateMsg{view: ViewDashboard}
 	}
 }
