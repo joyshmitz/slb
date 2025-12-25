@@ -2,6 +2,7 @@
 package core
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -81,8 +82,7 @@ func (e *PatternEngine) LoadDefaultPatterns() {
 	// Critical patterns (2+ approvals)
 	e.critical = compilePatterns(RiskTierCritical, []string{
 		// rm -rf on system paths (not /tmp, not relative paths)
-		`^rm\s+(-[rf]+\s+)+/(etc|usr|var|boot|home|root|bin|sbin|lib)`,
-		`^rm\s+(-[rf]+\s+)+/[^t]`, // rm -rf /anything except /t*
+		`^rm\s+(-[rf]+\s+)+/(boot|dev|etc|home|lib|lib64|media|mnt|opt|proc|root|run|sbin|srv|sys|usr|var)`,
 		`^rm\s+(-[rf]+\s+)+/($|\s)`, // rm -rf / (root)
 		`^rm\s+(-[rf]+\s+)+~`,     // rm -rf ~
 		// SQL data destruction
@@ -94,7 +94,7 @@ func (e *PatternEngine) LoadDefaultPatterns() {
 		`^terraform\s+destroy\s*$`,              // terraform destroy with no args
 		`^terraform\s+destroy\s+-auto-approve`,  // terraform destroy -auto-approve
 		`^terraform\s+destroy\s+[^-]`,           // terraform destroy <resource> (no flag)
-		`^kubectl\s+delete\s+(node|namespace|pv|pvc)\b`,
+		`^kubectl\s+delete\s+(node|nodes|namespace|namespaces|pv|persistentvolume|pvc|persistentvolumeclaim)\b`,
 		`^helm\s+uninstall.*--all`,
 		`^docker\s+system\s+prune\s+-a`,
 		// Git force push - both --force and -f (but not --force-with-lease)
@@ -149,7 +149,11 @@ func compilePatterns(tier RiskTier, patterns []string, source string) []*Pattern
 	for _, p := range patterns {
 		compiled, err := regexp.Compile("(?i)" + p) // Case-insensitive
 		if err != nil {
-			continue // Skip invalid patterns
+			// Built-in patterns must always be valid.
+			if source == "builtin" {
+				panic(fmt.Sprintf("invalid builtin pattern %q: %v", p, err))
+			}
+			continue // Skip invalid non-builtin patterns
 		}
 		result = append(result, &Pattern{
 			Tier:     tier,

@@ -23,6 +23,13 @@ var ErrSessionNotFound = errors.New("session not found")
 // Generates a UUID and HMAC session key.
 // Returns ErrActiveSessionExists if an active session already exists for the agent+project.
 func (db *DB) CreateSession(s *Session) error {
+	if s.AgentName == "" {
+		return fmt.Errorf("agent_name is required")
+	}
+	if s.ProjectPath == "" {
+		return fmt.Errorf("project_path is required")
+	}
+
 	// Generate UUID if not set
 	if s.ID == "" {
 		s.ID = uuid.New().String()
@@ -55,6 +62,26 @@ func (db *DB) CreateSession(s *Session) error {
 			return ErrActiveSessionExists
 		}
 		return fmt.Errorf("creating session: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateSessionModel updates the model for an active session.
+func (db *DB) UpdateSessionModel(id, newModel string) error {
+	result, err := db.Exec(`
+		UPDATE sessions SET model = ? WHERE id = ? AND ended_at IS NULL
+	`, newModel, id)
+	if err != nil {
+		return fmt.Errorf("updating session model: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("getting rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrSessionNotFound
 	}
 
 	return nil
@@ -311,10 +338,21 @@ func scanSession(row *sql.Row) (*Session, error) {
 	}
 
 	// Parse timestamps
-	s.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
-	s.LastActiveAt, _ = time.Parse(time.RFC3339, lastActiveAt)
+	s.StartedAt, err = time.Parse(time.RFC3339, startedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parsing started_at: %w", err)
+	}
+
+	s.LastActiveAt, err = time.Parse(time.RFC3339, lastActiveAt)
+	if err != nil {
+		return nil, fmt.Errorf("parsing last_active_at: %w", err)
+	}
+
 	if endedAt.Valid {
-		t, _ := time.Parse(time.RFC3339, endedAt.String)
+		t, err := time.Parse(time.RFC3339, endedAt.String)
+		if err != nil {
+			return nil, fmt.Errorf("parsing ended_at: %w", err)
+		}
 		s.EndedAt = &t
 	}
 
@@ -335,10 +373,21 @@ func scanSessions(rows *sql.Rows) ([]*Session, error) {
 		}
 
 		// Parse timestamps
-		s.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
-		s.LastActiveAt, _ = time.Parse(time.RFC3339, lastActiveAt)
+		s.StartedAt, err = time.Parse(time.RFC3339, startedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parsing started_at: %w", err)
+		}
+
+		s.LastActiveAt, err = time.Parse(time.RFC3339, lastActiveAt)
+		if err != nil {
+			return nil, fmt.Errorf("parsing last_active_at: %w", err)
+		}
+
 		if endedAt.Valid {
-			t, _ := time.Parse(time.RFC3339, endedAt.String)
+			t, err := time.Parse(time.RFC3339, endedAt.String)
+			if err != nil {
+				return nil, fmt.Errorf("parsing ended_at: %w", err)
+			}
 			s.EndedAt = &t
 		}
 

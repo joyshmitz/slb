@@ -33,6 +33,16 @@ If that audit trail is missing, then you must act as if the operation never happ
 
 ---
 
+#### Go Toolchain
+
+- Use **Go** 1.21+ (as per `go.mod`).
+- **Build:** Use `make build` or `go build ./...`.
+- **Test:** Use `go test ./...`.
+- **Format:** Always run `go fmt ./...` before committing.
+- **Dependencies:** Manage via `go.mod` and `go.sum`.
+
+---
+
 ### Code Editing Discipline
 
 - Do **not** run scripts that bulk-modify code (codemods, invented one-off scripts, giant `sed`/regex refactors).
@@ -54,7 +64,7 @@ We optimize for a clean architecture now, not backwards compatibility.
 
 ### Logging & Console Output
 
-- Prefer a shared logger (e.g., `lib/logger.ts` on `pino`/`consola`) over raw `console.log`.
+- Prefer a shared logger (e.g., standard `log` or structured logger used in the project) over raw `fmt.Println`.
 - No random console logs in UI components; if needed, make them dev-only and clean them up.
 - Log structured context: IDs, user, request, model, etc.
 - If a logger helper exists, you must use it; do not invent a different pattern.
@@ -69,9 +79,9 @@ When unsure of an API, look up current docs (late-2025) rather than guessing.
 
 ## MCP Agent Mail — Multi-Agent Coordination
 
-Agent Mail is already available as an MCP server; do not treat it as a CLI you must shell out to.
+Agent Mail is already available as an MCP server; do not treat it as a CLI you must shell out to. MCP Agent Mail *should* be available to you as an an MCP server; if it's not, then flag to the user. They might need to start Agent Mail using the `am` alias or by running `cd "<directory_where_they_installed_agent_mail>/mcp_agent_mail" && bash scripts/run_server_with_token.sh` if the alias isn't available or isn't working.
 
-What it gives:
+What Agent Mail gives:
 
 - Identities, inbox/outbox, searchable threads.
 - Advisory file reservations (leases) to avoid agents clobbering each other.
@@ -202,20 +212,93 @@ Never:
 
 ---
 
-### Using bv as an AI Sidecar
+### Using bv as an AI sidecar
 
-`bv` is a terminal UI + analysis layer for `.beads/beads.jsonl`. It precomputes graph metrics so you don’t have to.
+bv is a graph-aware triage engine for Beads projects (.beads/beads.jsonl). Instead of parsing JSONL or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
 
-Useful robot commands:
+**Scope boundary:** bv handles *what to work on* (triage, priority, planning). For agent-to-agent coordination (messaging, work claiming, file reservations), use MCP Agent Mail, which should be available to you as an an MCP server (if it's not, then flag to the user; they might need to start Agent Mail using the `am` alias or by running `cd "<directory_where_they_installed_agent_mail>/mcp_agent_mail" && bash scripts/run_server_with_token.sh` if the alias isn't available or isn't working).
 
-- `bv --robot-help` – overview
-- `bv --robot-insights` – graph metrics (PageRank, betweenness, HITS, critical path, cycles)
-- `bv --robot-plan` – parallelizable execution plan with unblocks info
-- `bv --robot-priority` – priority suggestions with reasoning
-- `bv --robot-recipes` – list recipes; apply via `bv --recipe <name>`
-- `bv --robot-diff --diff-since <commit|date>` – JSON diff of issue changes
+**⚠️ CRITICAL: Use ONLY `--robot-*` flags. Bare `bv` launches an interactive TUI that blocks your session.**
 
-Use `bv` instead of rolling your own dependency graph logic.
+#### The Workflow: Start With Triage
+
+**`bv --robot-triage` is your single entry point.** It returns everything you need in one call:
+- `quick_ref`: at-a-glance counts + top 3 picks
+- `recommendations`: ranked actionable items with scores, reasons, unblock info
+- `quick_wins`: low-effort high-impact items
+- `blockers_to_clear`: items that unblock the most downstream work
+- `project_health`: status/type/priority distributions, graph metrics
+- `commands`: copy-paste shell commands for next steps
+
+bv --robot-triage        # THE MEGA-COMMAND: start here
+bv --robot-next          # Minimal: just the single top pick + claim command
+
+#### Other bv Commands
+
+**Planning:**
+| Command | Returns |
+|---------|---------|
+| `--robot-plan` | Parallel execution tracks with `unblocks` lists |
+| `--robot-priority` | Priority misalignment detection with confidence |
+
+**Graph Analysis:**
+| Command | Returns |
+|---------|---------|
+| `--robot-insights` | Full metrics: PageRank, betweenness, HITS (hubs/authorities), eigenvector, critical path, cycles, k-core, articulation points, slack |
+| `--robot-label-health` | Per-label health: `health_level` (healthy\|warning\|critical), `velocity_score`, `staleness`, `blocked_count` |
+| `--robot-label-flow` | Cross-label dependency: `flow_matrix`, `dependencies`, `bottleneck_labels` |
+| `--robot-label-attention [--attention-limit=N]` | Attention-ranked labels by: (pagerank × staleness × block_impact) / velocity |
+
+**History & Change Tracking:**
+| Command | Returns |
+|---------|---------|
+| `--robot-history` | Bead-to-commit correlations: `stats`, `histories` (per-bead events/commits/milestones), `commit_index` |
+| `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified issues, cycles introduced/resolved |
+
+**Other Commands:**
+| Command | Returns |
+|---------|---------|
+| `--robot-burndown <sprint>` | Sprint burndown, scope changes, at-risk items |
+| `--robot-forecast <id\|all>` | ETA predictions with dependency-aware scheduling |
+| `--robot-alerts` | Stale issues, blocking cascades, priority mismatches |
+| `--robot-suggest` | Hygiene: duplicates, missing deps, label suggestions, cycle breaks |
+| `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
+| `--export-graph <file.html>` | Self-contained interactive HTML visualization |
+
+#### Scoping & Filtering
+
+bv --robot-plan --label backend              # Scope to label's subgraph
+bv --robot-insights --as-of HEAD~30          # Historical point-in-time
+bv --recipe actionable --robot-plan          # Pre-filter: ready to work (no blockers)
+bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank scores
+bv --robot-triage --robot-triage-by-track    # Group by parallel work streams
+bv --robot-triage --robot-triage-by-label    # Group by domain
+
+#### Understanding Robot Output
+
+**All robot JSON includes:**
+- `data_hash` — Fingerprint of source beads.jsonl (verify consistency across calls)
+- `status` — Per-metric state: `computed|approx|timeout|skipped` + elapsed ms
+- `as_of` / `as_of_commit` — Present when using `--as-of`; contains ref and resolved SHA
+
+**Two-phase analysis:**
+- **Phase 1 (instant):** degree, topo sort, density — always available immediately
+- **Phase 2 (async, 500ms timeout):** PageRank, betweenness, HITS, eigenvector, cycles — check `status` flags
+
+**For large graphs (>500 nodes):** Some metrics may be approximated or skipped. Always check `status`.
+
+#### jq Quick Reference
+
+bv --robot-triage | jq '.quick_ref'                        # At-a-glance summary
+bv --robot-triage | jq '.recommendations[0]'               # Top recommendation
+bv --robot-plan | jq '.plan.summary.highest_impact'        # Best unblock target
+bv --robot-insights | jq '.status'                         # Check metric readiness
+bv --robot-insights | jq '.Cycles'                         # Circular deps (must fix!)
+bv --robot-label-health | jq '.results.labels[] | select(.health_level == "critical")'
+
+**Performance:** Phase 1 instant, Phase 2 async (500ms timeout). Prefer `--robot-plan` over `--robot-insights` when speed matters. Results cached by data hash.
+
+Use bv instead of parsing beads.jsonl—it computes PageRank, critical paths, cycles, and parallel tracks deterministically.
 
 ---
 
@@ -291,17 +374,70 @@ Treat cass as a way to avoid re-solving problems other agents already handled.
 
 ---
 
-## Contribution Policy
+## Memory System: cass-memory
 
-Remove any mention of contributing/contributors from README and don't reinsert it.
+The Cass Memory System (cm) is a tool for giving agents an effective memory based on the ability to quickly search across previous coding agent sessions across an array of different coding agent tools (e.g., Claude Code, Codex, Gemini-CLI, Cursor, etc) and projects (and even across multiple machines, optionally) and then reflect on what they find and learn in new sessions
+to draw out useful lessons and takeaways; these lessons are then stored and can be queried and retrieved later, much like how human memory works.
+
+The `cm onboard` command guides you through analyzing historical sessions and extracting valuable rules.
+
+### Quick Start
+
+```bash
+# 1. Check status and see recommendations
+cm onboard status
+
+# 2. Get sessions to analyze (filtered by gaps in your playbook)
+cm onboard sample --fill-gaps
+
+# 3. Read a session with rich context
+cm onboard read /path/to/session.jsonl --template
+
+# 4. Add extracted rules (one at a time or batch)
+cm playbook add "Your rule content" --category "debugging"
+# Or batch add:
+cm playbook add --file rules.json
+
+# 5. Mark session as processed
+cm onboard mark-done /path/to/session.jsonl
+```
+
+Before starting complex tasks, retrieve relevant context:
+
+```bash
+cm context "<task description>" --json
+```
+
+This returns:
+- **relevantBullets**: Rules that may help with your task
+- **antiPatterns**: Pitfalls to avoid
+- **historySnippets**: Past sessions that solved similar problems
+- **suggestedCassQueries**: Searches for deeper investigation
+
+### Protocol
+
+1. **START**: Run `cm context "<task>" --json` before non-trivial work
+2. **WORK**: Reference rule IDs when following them (e.g., "Following b-8f3a2c..."
+3. **FEEDBACK**: Leave inline comments when rules help/hurt:
+   - `// [cass: helpful b-xyz] - reason`
+   - `// [cass: harmful b-xyz] - reason`
+4. **END**: Just finish your work. Learning happens automatically.
+
+### Key Flags
+
+| Flag | Purpose |
+|------|---------|
+| `--json` | Machine-readable JSON output (required!) |
+| `--limit N` | Cap number of rules returned |
+| `--no-history` | Skip historical snippets for faster response |
+
+stdout = data only, stderr = diagnostics. Exit 0 = success.
 
 ---
 
 ## UBS Quick Reference for AI Agents
 
 UBS stands for "Ultimate Bug Scanner": **The AI Coding Agent's Secret Weapon: Flagging Likely Bugs for Fixing Early On**
-
-**Install:** `curl -sSL https://raw.githubusercontent.com/Dicklesworthstone/ultimate_bug_scanner/main/install.sh | bash`
 
 **Golden Rule:** `ubs <changed-files>` before every commit. Exit 0 = safe. Exit >0 = fix & re-run.
 
@@ -344,3 +480,9 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 - ❌ Ignore findings → ✅ Investigate each
 - ❌ Full scan per edit → ✅ Scope to file
 - ❌ Fix symptom (`if (x) { x.y }`) → ✅ Root cause (`x?.y`)
+
+---
+
+## Contribution Policy
+
+Remove any mention of contributing/contributors from README and don't reinsert it.

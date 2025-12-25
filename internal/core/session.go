@@ -107,6 +107,13 @@ func ResumeSession(dbConn *db.DB, opts ResumeOptions) (*db.Session, error) {
 		return newSess, nil
 	}
 
+	// If model changed (and we didn't force-recreate), update the session model.
+	if opts.Model != "" && sess.Model != opts.Model {
+		if err := dbConn.UpdateSessionModel(sess.ID, opts.Model); err != nil {
+			return nil, fmt.Errorf("updating session model: %w", err)
+		}
+	}
+
 	// Update heartbeat and return the refreshed session record.
 	if err := dbConn.UpdateSessionHeartbeat(sess.ID); err != nil {
 		return nil, err

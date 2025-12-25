@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/Dicklesworthstone/slb/internal/tui/theme"
+	"github.com/Dicklesworthstone/slb/internal/utils"
 )
 
 // CommandBox renders a command in a styled box.
@@ -54,6 +55,8 @@ func (c *CommandBox) Render() string {
 		displayCmd = c.Redacted
 	}
 
+	displayCmd = utils.SanitizeInput(displayCmd)
+
 	// Truncate if needed
 	if c.MaxWidth > 0 && len(displayCmd) > c.MaxWidth {
 		displayCmd = displayCmd[:c.MaxWidth-3] + "..."
@@ -94,6 +97,8 @@ func (c *CommandBox) RenderCompact() string {
 		displayCmd = c.Redacted
 	}
 
+	displayCmd = utils.SanitizeInput(displayCmd)
+
 	// Truncate more aggressively for compact view
 	maxLen := 40
 	if len(displayCmd) > maxLen {
@@ -119,6 +124,8 @@ func (c *CommandBox) RenderFull() string {
 	if c.Redacted != "" {
 		displayCmd = c.Redacted
 	}
+
+	displayCmd = utils.SanitizeInput(displayCmd)
 
 	cmdStyle := lipgloss.NewStyle().
 		Foreground(t.Green)
