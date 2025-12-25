@@ -183,6 +183,12 @@ func addToGitignore(path string) error {
 		}
 	}
 
+	// Check if file ends with a newline before opening for append
+	needsLeadingNewline := false
+	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+		needsLeadingNewline = data[len(data)-1] != '\n'
+	}
+
 	// Append to .gitignore
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
@@ -190,19 +196,9 @@ func addToGitignore(path string) error {
 	}
 	defer f.Close()
 
-	// Check if file is empty or ends with newline
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-
 	content := ""
-	if info.Size() > 0 {
-		// Read last byte to check for newline
-		var buf [1]byte
-		if _, err := f.ReadAt(buf[:], info.Size()-1); err == nil && buf[0] != '\n' {
-			content = "\n"
-		}
+	if needsLeadingNewline {
+		content = "\n"
 	}
 	content += "\n# SLB state (don't commit pending requests)\n" + slbEntry + "\n"
 

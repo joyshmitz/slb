@@ -3,7 +3,6 @@ package daemon
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -529,10 +528,9 @@ func TestVerifier_RevertExecutingOnFailure_WrongStatus(t *testing.T) {
 	}
 }
 
-func TestVerifier_RevertExecutingOnFailure_TransitionNotAllowed(t *testing.T) {
-	// NOTE: The DB state machine does not currently allow EXECUTING -> APPROVED transition.
-	// This test verifies that RevertExecutingOnFailure correctly returns the DB error.
-	// If this behavior should change, update canTransition in db/requests.go.
+func TestVerifier_RevertExecutingOnFailure_Success(t *testing.T) {
+	// Test that EXECUTING -> APPROVED transition works for pre-execution failure reverts.
+	// This allows execution to be retried if setup fails before the command runs.
 	database := setupTestDB(t)
 	v := NewVerifier(database)
 
@@ -554,27 +552,22 @@ func TestVerifier_RevertExecutingOnFailure_TransitionNotAllowed(t *testing.T) {
 		t.Fatalf("expected status EXECUTING, got %s", req.Status)
 	}
 
-	// Attempt to revert - should fail due to DB state machine constraints
+	// Revert should succeed, transitioning back to APPROVED
 	err = v.RevertExecutingOnFailure("req1")
-	if err == nil {
-		t.Fatal("expected error for executing -> approved transition")
-	}
-	// The error should mention the invalid transition
-	if !strings.Contains(err.Error(), "invalid state transition") {
-		t.Errorf("expected 'invalid state transition' error, got: %v", err)
+	if err != nil {
+		t.Fatalf("RevertExecutingOnFailure failed: %v", err)
 	}
 
-	// Status should remain EXECUTING
+	// Status should now be APPROVED
 	req, _ = database.GetRequest("req1")
-	if req.Status != db.StatusExecuting {
-		t.Errorf("expected status to remain %s, got %s", db.StatusExecuting, req.Status)
+	if req.Status != db.StatusApproved {
+		t.Errorf("expected status %s after revert, got %s", db.StatusApproved, req.Status)
 	}
 }
 
 func TestVerifier_RevertExecutingOnFailure_ExpiredApproval(t *testing.T) {
-	// NOTE: The DB state machine does not currently allow EXECUTING -> TIMEOUT transition.
-	// This test verifies that the function correctly hits the expired approval path
-	// and returns an error from the DB layer.
+	// When approval has expired during execution, revert should transition to TIMED_OUT
+	// instead of APPROVED, since the request cannot be retried.
 	database := setupTestDB(t)
 	v := NewVerifier(database)
 
@@ -609,27 +602,22 @@ func TestVerifier_RevertExecutingOnFailure_ExpiredApproval(t *testing.T) {
 		t.Fatalf("failed to create request: %v", err)
 	}
 
-	// Revert attempts to transition to TIMEOUT due to expired approval
-	// This fails because the DB doesn't allow EXECUTING -> TIMEOUT
+	// Revert transitions to TIMED_OUT when approval has expired
 	err := v.RevertExecutingOnFailure("req-expired-approval")
-	if err == nil {
-		t.Fatal("expected error for executing -> timeout transition")
-	}
-	if !strings.Contains(err.Error(), "invalid state transition") {
-		t.Errorf("expected 'invalid state transition' error, got: %v", err)
+	if err != nil {
+		t.Fatalf("RevertExecutingOnFailure failed: %v", err)
 	}
 
-	// Status should remain EXECUTING
+	// Status should now be TIMED_OUT
 	req, _ := database.GetRequest("req-expired-approval")
-	if req.Status != db.StatusExecuting {
-		t.Errorf("expected status to remain %s, got %s", db.StatusExecuting, req.Status)
+	if req.Status != db.StatusTimedOut {
+		t.Errorf("expected status %s after expired revert, got %s", db.StatusTimedOut, req.Status)
 	}
 }
 
 func TestVerifier_RevertExecutingOnFailure_NilApprovalExpiry(t *testing.T) {
-	// NOTE: The DB state machine does not currently allow EXECUTING -> APPROVED transition.
-	// This test verifies that the function correctly handles nil ApprovalExpiresAt
-	// (treating it as "not expired") and attempts the revert, which fails at the DB layer.
+	// When ApprovalExpiresAt is nil, it's treated as "not expired",
+	// so revert should transition back to APPROVED.
 	database := setupTestDB(t)
 	v := NewVerifier(database)
 
@@ -663,19 +651,16 @@ func TestVerifier_RevertExecutingOnFailure_NilApprovalExpiry(t *testing.T) {
 		t.Fatalf("failed to create request: %v", err)
 	}
 
-	// Revert attempts to transition to APPROVED but fails due to DB constraints
+	// Revert should succeed, transitioning to APPROVED
 	err := v.RevertExecutingOnFailure("req-nil-expiry")
-	if err == nil {
-		t.Fatal("expected error for executing -> approved transition")
-	}
-	if !strings.Contains(err.Error(), "invalid state transition") {
-		t.Errorf("expected 'invalid state transition' error, got: %v", err)
+	if err != nil {
+		t.Fatalf("RevertExecutingOnFailure failed: %v", err)
 	}
 
-	// Status should remain EXECUTING
+	// Status should now be APPROVED
 	req, _ := database.GetRequest("req-nil-expiry")
-	if req.Status != db.StatusExecuting {
-		t.Errorf("expected status to remain %s, got %s", db.StatusExecuting, req.Status)
+	if req.Status != db.StatusApproved {
+		t.Errorf("expected status %s after revert, got %s", db.StatusApproved, req.Status)
 	}
 }
 

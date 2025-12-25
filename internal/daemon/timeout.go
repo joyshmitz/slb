@@ -272,7 +272,7 @@ func (h *TimeoutHandler) handleAutoApproveWarn(req *db.Request) error {
 func (h *TimeoutHandler) sendDesktopNotification(req *db.Request) {
 	title := fmt.Sprintf("SLB: Request Escalated (%s)", req.RiskTier)
 	body := fmt.Sprintf("Request %s timed out.\nCommand: %s\nAgent: %s",
-		req.ID[:8], truncateString(req.Command.Raw, 50), req.RequestorAgent)
+		truncateID(req.ID, 8), truncateString(req.Command.Raw, 50), req.RequestorAgent)
 
 	if err := notify(title, body); err != nil {
 		h.logger.Debug("desktop notification failed", "error", err)
@@ -283,7 +283,7 @@ func (h *TimeoutHandler) sendDesktopNotification(req *db.Request) {
 func (h *TimeoutHandler) sendAutoApproveWarning(req *db.Request) {
 	title := "SLB: Request Auto-Approved (WARNING)"
 	body := fmt.Sprintf("Request %s was auto-approved after timeout.\nCommand: %s",
-		req.ID[:8], truncateString(req.Command.Raw, 50))
+		truncateID(req.ID, 8), truncateString(req.Command.Raw, 50))
 
 	if err := notify(title, body); err != nil {
 		h.logger.Debug("desktop notification failed", "error", err)
@@ -347,6 +347,14 @@ func truncateString(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// truncateID safely truncates an ID to maxLen characters.
+func truncateID(id string, maxLen int) string {
+	if len(id) <= maxLen {
+		return id
+	}
+	return id[:maxLen]
 }
 
 // CheckExpiredRequests is a convenience function that checks for expired requests

@@ -30,6 +30,7 @@ var validTransitions = map[db.RequestStatus][]db.RequestStatus{
 		db.StatusExecuted,
 		db.StatusExecutionFailed,
 		db.StatusTimedOut,
+		db.StatusApproved, // Allow revert if execution fails before command starts
 	},
 	db.StatusTimeout: {
 		db.StatusEscalated,

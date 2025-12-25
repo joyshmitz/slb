@@ -255,7 +255,7 @@ func TestGetValidTransitions(t *testing.T) {
 		{"empty->pending", "", []db.RequestStatus{db.StatusPending}},
 		{"pending", db.StatusPending, []db.RequestStatus{db.StatusApproved, db.StatusRejected, db.StatusCancelled, db.StatusTimeout}},
 		{"approved", db.StatusApproved, []db.RequestStatus{db.StatusExecuting, db.StatusCancelled}},
-		{"executing", db.StatusExecuting, []db.RequestStatus{db.StatusExecuted, db.StatusExecutionFailed, db.StatusTimedOut}},
+		{"executing", db.StatusExecuting, []db.RequestStatus{db.StatusExecuted, db.StatusExecutionFailed, db.StatusTimedOut, db.StatusApproved}},
 		{"timeout", db.StatusTimeout, []db.RequestStatus{db.StatusEscalated}},
 		{"terminal (executed)", db.StatusExecuted, nil},
 		{"terminal (rejected)", db.StatusRejected, nil},

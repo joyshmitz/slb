@@ -359,7 +359,8 @@ func canTransition(from, to RequestStatus) bool {
 	case StatusApproved:
 		return to == StatusExecuting || to == StatusCancelled
 	case StatusExecuting:
-		return to == StatusExecuted || to == StatusExecutionFailed || to == StatusTimedOut
+		// Note: StatusApproved allows reverting execution when setup fails before command starts
+		return to == StatusExecuted || to == StatusExecutionFailed || to == StatusTimedOut || to == StatusApproved
 	case StatusTimeout:
 		return to == StatusEscalated
 	default:

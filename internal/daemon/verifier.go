@@ -164,9 +164,9 @@ func (v *Verifier) RevertExecutingOnFailure(requestID string) error {
 
 	// Check approval hasn't expired.
 	if request.ApprovalExpiresAt != nil && time.Now().After(*request.ApprovalExpiresAt) {
-		// Approval expired, transition to TIMEOUT instead.
-		if err := v.db.UpdateRequestStatus(requestID, db.StatusTimeout); err != nil {
-			return fmt.Errorf("updating status to timeout: %w", err)
+		// Approval expired, transition to TIMED_OUT instead.
+		if err := v.db.UpdateRequestStatus(requestID, db.StatusTimedOut); err != nil {
+			return fmt.Errorf("updating status to timed_out: %w", err)
 		}
 		return nil
 	}
