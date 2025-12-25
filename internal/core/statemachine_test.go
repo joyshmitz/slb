@@ -370,6 +370,7 @@ func TestCanApprove(t *testing.T) {
 		want   bool
 	}{
 		{db.StatusPending, true},
+		{db.StatusEscalated, true}, // Escalated requests can be reviewed by human
 		{db.StatusApproved, false},
 		{db.StatusExecuting, false},
 		{db.StatusExecuted, false},

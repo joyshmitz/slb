@@ -191,8 +191,9 @@ func RequiresApproval(req *db.Request, currentApprovals int) bool {
 }
 
 // CanApprove checks if a request can receive more approvals.
+// Both pending and escalated requests can be approved/rejected.
 func CanApprove(status db.RequestStatus) bool {
-	return status == db.StatusPending
+	return status == db.StatusPending || status == db.StatusEscalated
 }
 
 // CanExecute checks if a request can be executed.

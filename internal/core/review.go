@@ -144,7 +144,7 @@ func (rs *ReviewService) SubmitReview(opts ReviewOptions) (*ReviewResult, error)
 	if err != nil {
 		return nil, fmt.Errorf("getting request: %w", err)
 	}
-	if request.Status != db.StatusPending {
+	if !CanApprove(request.Status) {
 		return nil, fmt.Errorf("%w: status is %s", ErrRequestNotPending, request.Status)
 	}
 
@@ -336,8 +336,8 @@ func (rs *ReviewService) CanReview(sessionID, requestID string) (bool, string) {
 	if err != nil {
 		return false, fmt.Sprintf("request not found: %v", err)
 	}
-	if request.Status != db.StatusPending {
-		return false, fmt.Sprintf("request is not pending (status: %s)", request.Status)
+	if !CanApprove(request.Status) {
+		return false, fmt.Sprintf("request cannot be reviewed (status: %s)", request.Status)
 	}
 
 	// Check self-review
