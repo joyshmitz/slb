@@ -264,7 +264,7 @@ func (e *PatternEngine) ClassifyCommand(cmd, cwd string) *MatchResult {
 func (e *PatternEngine) classifyCompoundCommand(normalized *NormalizedCommand, cwd string) *MatchResult {
 	result := &MatchResult{
 		NeedsApproval:   false,
-		IsSafe:          true, // Assume safe until proven otherwise
+		IsSafe:          false, // Only set true if explicitly matched safe pattern
 		MinApprovals:    0,
 		MatchedSegments: []SegmentMatch{},
 	}
