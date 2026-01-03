@@ -322,6 +322,395 @@ The command was modified after approval. This is a security feature - re-request
 
 Use slb as **defense in depth**, not your only protection.
 
+## Claude Code Hook Integration
+
+For seamless integration with Claude Code, `slb` provides a PreToolUse hook that intercepts Bash commands before execution.
+
+### Quick Setup
+
+```bash
+# Install hook (generates script and updates Claude Code settings)
+slb hook install
+
+# Check installation status
+slb hook status
+
+# Test classification without executing
+slb hook test "rm -rf ./build"
+```
+
+### How It Works
+
+1. **Hook Script**: A Python script at `~/.slb/hooks/slb_guard.py` intercepts Bash tool calls
+2. **Pattern Matching**: Commands are classified using embedded patterns (same as the daemon)
+3. **Daemon Communication**: For approval checks, the hook connects to the SLB daemon via Unix socket
+4. **Fail-Closed**: If SLB is unavailable, dangerous commands are blocked by default
+
+### Hook Commands
+
+```bash
+slb hook generate                 # Generate hook script only
+slb hook install [--global]       # Install to Claude Code settings
+slb hook uninstall                # Remove hook from settings
+slb hook status                   # Show installation status
+slb hook test "<command>"         # Test command classification
+```
+
+The hook returns one of three actions to Claude Code:
+- `allow` - Command proceeds without intervention
+- `ask` - User is prompted (CAUTION tier)
+- `block` - Command is blocked with message to use `slb request`
+
+## Pattern Matching Engine
+
+The pattern matching engine is the core of `slb`'s command classification system.
+
+### Classification Algorithm
+
+1. **Normalization**: Commands are parsed using shell-aware tokenization
+   - Strips wrapper prefixes: `sudo`, `doas`, `env`, `time`, `nohup`, etc.
+   - Extracts inner commands from `bash -c 'command'` patterns
+   - Resolves paths: `./foo` → `/absolute/path/foo`
+
+2. **Compound Command Handling**: Commands with `;`, `&&`, `||`, `|` are split and each segment is classified independently. The **highest risk segment determines the overall tier**.
+   ```
+   echo "done" && rm -rf /etc    →  CRITICAL (rm -rf /etc wins)
+   ls && git status              →  SAFE (no dangerous patterns)
+   ```
+
+3. **Shell-Aware Splitting**: Separators inside quotes are preserved:
+   ```
+   psql -c "DELETE FROM users; DROP TABLE x;"  →  Single segment (SQL)
+   echo "foo" && rm -rf /tmp                   →  Two segments
+   ```
+
+4. **Pattern Precedence**: Patterns are checked in order: SAFE → CRITICAL → DANGEROUS → CAUTION
+   - First match wins within each tier
+   - SAFE patterns skip review entirely
+
+5. **Fail-Safe Parse Handling**: If command parsing fails (unbalanced quotes, complex escapes), the tier is **upgraded by one level**:
+   - SAFE → CAUTION
+   - CAUTION → DANGEROUS
+   - DANGEROUS → CRITICAL
+
+### Fallback Detection
+
+For commands that wrap SQL (e.g., `psql -c "..."`, `mysql -e "..."`), pattern matching may not catch embedded statements. The engine includes fallback detection:
+
+```
+DELETE FROM ... (no WHERE clause)  →  CRITICAL
+DELETE FROM ... WHERE ...          →  DANGEROUS
+```
+
+### Runtime Pattern Management
+
+Agents can add patterns at runtime:
+
+```bash
+slb patterns add --tier dangerous "docker system prune"
+slb patterns list --tier critical
+slb patterns test "kubectl delete deployment nginx"
+```
+
+Pattern changes are persisted to SQLite and take effect immediately.
+
+## Request Lifecycle
+
+Requests follow a well-defined state machine with strict transition rules.
+
+### State Diagram
+
+```
+                    ┌─────────────┐
+                    │   PENDING   │
+                    └──────┬──────┘
+           ┌───────────────┼───────────────┐───────────────┐
+           ▼               ▼               ▼               ▼
+     ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
+     │ APPROVED │    │ REJECTED │    │ CANCELLED│    │ TIMEOUT  │
+     └────┬─────┘    └──────────┘    └──────────┘    └────┬─────┘
+          │              (terminal)      (terminal)       │
+          ▼                                               ▼
+     ┌──────────┐                                   ┌──────────┐
+     │EXECUTING │                                   │ESCALATED │
+     └────┬─────┘                                   └────┬─────┘
+          │                                              │
+   ┌──────┴──────┬──────────┐                 ┌─────────┴─────────┐
+   ▼             ▼          ▼                 ▼                   ▼
+┌────────┐  ┌─────────┐  ┌────────┐      ┌──────────┐       ┌──────────┐
+│EXECUTED│  │EXEC_FAIL│  │TIMED_OUT│     │ APPROVED │       │ REJECTED │
+└────────┘  └─────────┘  └────────┘      └──────────┘       └──────────┘
+(terminal)   (terminal)   (terminal)
+```
+
+### Terminal States
+
+Once a request reaches a terminal state, no further transitions are allowed:
+- **EXECUTED**: Command completed successfully
+- **EXECUTION_FAILED**: Command returned non-zero exit code
+- **TIMED_OUT**: Command exceeded execution timeout
+- **CANCELLED**: Request was cancelled by the requester
+- **REJECTED**: Request was rejected by a reviewer
+
+### Approval TTL
+
+Approvals have a time-to-live to prevent stale approvals:
+- **Standard requests**: 30 minutes (configurable)
+- **CRITICAL requests**: 10 minutes (stricter by default)
+
+If an approval expires before execution, the request must be re-approved.
+
+## Execution Verification
+
+Before any command executes, five security gates must pass:
+
+### Gate 1: Status Check
+Request must be in APPROVED state.
+
+### Gate 2: Approval Expiry
+Approval TTL must not have elapsed.
+
+### Gate 3: Command Hash
+SHA-256 hash of the command must match. This ensures the exact approved command is executed—no modifications after approval.
+
+### Gate 4: Tier Consistency
+Risk tier must still match (patterns may have changed since approval).
+
+### Gate 5: First-Executor-Wins
+Only one executor can claim the request. Atomic database transition prevents race conditions when multiple agents try to execute.
+
+## Dry Run & Rollback
+
+### Dry Run Pre-flight
+
+For supported commands, `slb` can run a dry-run variant before the real execution:
+
+```bash
+# Supported dry-run variants:
+terraform plan          # instead of terraform apply
+kubectl diff            # instead of kubectl apply
+git diff                # show what would change
+```
+
+Enable in config:
+```toml
+[general]
+enable_dry_run = true
+```
+
+### Rollback State Capture
+
+Before executing, `slb` can capture state for potential rollback:
+
+```toml
+[general]
+enable_rollback_capture = true
+max_rollback_size_mb = 100
+```
+
+Captured state includes:
+- **Filesystem**: Tar archive of affected paths
+- **Git**: HEAD commit, branch, dirty state, untracked files
+- **Kubernetes**: YAML manifests of affected resources
+
+Rollback:
+```bash
+slb rollback <request-id>           # Restore captured state
+slb rollback <request-id> --force   # Force overwrite
+```
+
+## Daemon Architecture
+
+The daemon provides real-time notifications and execution verification.
+
+### IPC Communication
+
+Primary communication uses Unix domain sockets:
+```
+/tmp/slb-<hash>.sock
+```
+
+The socket path includes a hash derived from the project path, allowing multiple project daemons to coexist.
+
+### JSON-RPC Protocol
+
+All daemon communication uses JSON-RPC 2.0:
+
+```json
+{"jsonrpc": "2.0", "method": "hook_query", "params": {"command": "rm -rf /"}, "id": 1}
+```
+
+Available methods:
+- `hook_query` - Classify command and check approvals
+- `hook_health` - Health check with pattern hash
+- `verify_execution` - Check execution gates
+- `subscribe` - Subscribe to request events
+
+### TCP Mode (Docker/Remote)
+
+For agents in containers or remote machines:
+
+```toml
+[daemon]
+tcp_addr = "0.0.0.0:9876"
+tcp_require_auth = true
+tcp_allowed_ips = ["192.168.1.0/24"]
+```
+
+### Timeout Handling
+
+When a request's approval window expires:
+
+| Action | Behavior |
+|--------|----------|
+| `escalate` | Transition to ESCALATED, notify humans (default) |
+| `auto_reject` | Automatically reject the request |
+| `auto_approve_warn` | Auto-approve CAUTION tier with warning notification |
+
+```toml
+[general]
+timeout_action = "escalate"
+```
+
+### Desktop Notifications
+
+Native notifications on macOS (AppleScript), Linux (notify-send), and Windows (PowerShell):
+
+```toml
+[notifications]
+desktop_enabled = true
+desktop_delay_seconds = 60    # Wait before first notification
+```
+
+## Advanced Configuration
+
+### Cross-Project Reviews
+
+Allow reviewers from other projects:
+
+```toml
+[general]
+cross_project_reviews = true
+review_pool = ["agent-a", "agent-b", "human-reviewer"]
+```
+
+### Trusted Self-Approval
+
+Designated agents can self-approve after a delay:
+
+```toml
+[agents]
+trusted_self_approve = ["senior-agent", "lead-developer"]
+trusted_self_approve_delay_seconds = 300    # 5 minute delay
+```
+
+### Conflict Resolution
+
+When approvals and rejections conflict:
+
+```toml
+[general]
+conflict_resolution = "any_rejection_blocks"  # Default
+# Options: any_rejection_blocks | first_wins | human_breaks_tie
+```
+
+### Different Model Requirement
+
+Require reviewers to use a different AI model:
+
+```toml
+[general]
+require_different_model = true
+different_model_timeout = 300    # Escalate to human after 5 min
+```
+
+### Rate Limiting
+
+Prevent request floods:
+
+```toml
+[rate_limits]
+max_pending_per_session = 5      # Max concurrent pending requests
+max_requests_per_minute = 10     # Rate limit per session
+rate_limit_action = "reject"     # reject | queue | warn
+```
+
+### Dynamic Quorum
+
+Scale approval requirements based on active reviewers:
+
+```toml
+[patterns.critical]
+dynamic_quorum = true
+dynamic_quorum_floor = 2    # Minimum approvals even with few reviewers
+```
+
+### Webhook Notifications
+
+Send events to external systems:
+
+```toml
+[notifications]
+webhook_url = "https://slack.com/webhook/..."
+```
+
+Payload includes request details, classification, and event type.
+
+## Security Design Principles
+
+### Defense in Depth
+
+`slb` implements multiple security layers:
+
+1. **Pattern-based classification** - First line of defense
+2. **Peer review requirement** - Human/agent oversight
+3. **Command hash binding** - Tamper detection
+4. **Approval TTL** - Prevent stale approvals
+5. **Execution verification gates** - Pre-execution checks
+6. **Audit logging** - Full traceability
+
+### Cryptographic Guarantees
+
+- **Command binding**: SHA-256 hash computed at request time, verified at execution
+- **Review signatures**: HMAC signatures using session keys prevent review forgery
+- **Session keys**: Generated per-session, never stored in plaintext
+
+### Fail-Closed Behavior
+
+When components fail:
+- Daemon unreachable → Block dangerous commands (hook)
+- Parse error → Upgrade tier by one level
+- Approval expired → Require new approval
+- Hash mismatch → Reject execution
+
+### Audit Trail
+
+Every action is logged to SQLite with:
+- Timestamp
+- Actor (session ID, agent name)
+- Action type
+- Request/review details
+- Outcome
+
+Query history:
+```bash
+slb history [--days 7] [--session <id>] [--status executed]
+```
+
+## Environment Variables
+
+All config options can be set via environment:
+
+| Variable | Description |
+|----------|-------------|
+| `SLB_MIN_APPROVALS` | Minimum approval count |
+| `SLB_REQUEST_TIMEOUT` | Request timeout in seconds |
+| `SLB_TIMEOUT_ACTION` | What to do on timeout |
+| `SLB_DESKTOP_NOTIFICATIONS` | Enable desktop notifications |
+| `SLB_WEBHOOK_URL` | Webhook notification URL |
+| `SLB_DAEMON_TCP_ADDR` | TCP listen address |
+| `SLB_TRUSTED_SELF_APPROVE` | Comma-separated trusted agents |
+
 ## Planning & Development
 
 - Design doc: `PLAN_TO_MAKE_SLB.md`
