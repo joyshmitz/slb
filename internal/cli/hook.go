@@ -496,29 +496,45 @@ import sys
 import json
 import socket
 import os
+import hashlib
+import tempfile
 
-SLB_SOCKET_PATH = os.path.expanduser("~/.slb/hook.sock")
 SLB_TIMEOUT = 0.05  # 50ms timeout
+
+def get_socket_path() -> str:
+    """Get the SLB daemon socket path for the current directory."""
+    cwd = os.getcwd()
+    hash_digest = hashlib.sha256(cwd.encode()).hexdigest()[:12]
+    return os.path.join(tempfile.gettempdir(), f"slb-{hash_digest}.sock")
 
 def query_slb_daemon(command: str, session_id: str, cwd: str) -> Optional[dict]:
     """Query SLB daemon for approval status. Returns None if unavailable."""
-    if not os.path.exists(SLB_SOCKET_PATH):
+    socket_path = get_socket_path()
+    if not os.path.exists(socket_path):
         return None
 
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(SLB_TIMEOUT)
-            sock.connect(SLB_SOCKET_PATH)
+            sock.connect(socket_path)
+            # Use JSON-RPC format expected by the daemon
             request = json.dumps({
-                "type": "query",
-                "command": command,
-                "session_id": session_id,
-                "cwd": cwd
+                "method": "hook_query",
+                "params": {
+                    "command": command,
+                    "session_id": session_id,
+                    "cwd": cwd
+                },
+                "id": 1
             })
             sock.sendall(request.encode() + b'\n')
             response = sock.recv(4096)
-            return json.loads(response.decode())
-    except (socket.error, json.JSONDecodeError, TimeoutError):
+            data = json.loads(response.decode())
+            # Extract result from JSON-RPC response
+            if "result" in data:
+                return data["result"]
+            return None
+    except (socket.error, json.JSONDecodeError, TimeoutError, OSError):
         return None
 
 def main():

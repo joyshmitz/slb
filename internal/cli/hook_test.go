@@ -711,7 +711,7 @@ func TestGenerateHookScript_ContainsEssentialComponents(t *testing.T) {
 		"def classify(command:",        // Classify function
 		"def is_blocked(command:",      // Block check function
 		"def query_slb_daemon",         // Daemon query function
-		"SLB_SOCKET_PATH",              // Socket path constant
+		"def get_socket_path",          // Socket path function
 		"def main():",                  // Entry point
 		"if __name__ == \"__main__\":", // Module guard
 	}
