@@ -699,21 +699,21 @@ func TestGenerateHookScript_ContainsEssentialComponents(t *testing.T) {
 
 	// Essential components
 	essentials := []string{
-		"#!/usr/bin/env python3",         // Shebang
-		"import re",                       // Regex import
-		"import sys",                      // Sys import
-		"import json",                     // JSON import
-		"import socket",                   // Socket for daemon
-		"SAFE_PATTERNS",                   // Pattern arrays
+		"#!/usr/bin/env python3", // Shebang
+		"import re",              // Regex import
+		"import sys",             // Sys import
+		"import json",            // JSON import
+		"import socket",          // Socket for daemon
+		"SAFE_PATTERNS",          // Pattern arrays
 		"CAUTION_PATTERNS",
 		"DANGEROUS_PATTERNS",
 		"CRITICAL_PATTERNS",
-		"def classify(command:",           // Classify function
-		"def is_blocked(command:",         // Block check function
-		"def query_slb_daemon",            // Daemon query function
-		"SLB_SOCKET_PATH",                 // Socket path constant
-		"def main():",                     // Entry point
-		"if __name__ == \"__main__\":",    // Module guard
+		"def classify(command:",        // Classify function
+		"def is_blocked(command:",      // Block check function
+		"def query_slb_daemon",         // Daemon query function
+		"SLB_SOCKET_PATH",              // Socket path constant
+		"def main():",                  // Entry point
+		"if __name__ == \"__main__\":", // Module guard
 	}
 
 	for _, essential := range essentials {

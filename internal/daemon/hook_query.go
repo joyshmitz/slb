@@ -19,11 +19,11 @@ type HookQueryParams struct {
 
 // HookQueryResult is the result of a hook query.
 type HookQueryResult struct {
-	Action         string `json:"action"`          // "allow", "block", "ask"
-	Message        string `json:"message"`         // Human-readable message
-	Tier           string `json:"tier"`            // Risk tier
-	MatchedPattern string `json:"matched_pattern"` // Pattern that matched
-	MinApprovals   int    `json:"min_approvals"`   // Required approvals
+	Action         string `json:"action"`               // "allow", "block", "ask"
+	Message        string `json:"message"`              // Human-readable message
+	Tier           string `json:"tier"`                 // Risk tier
+	MatchedPattern string `json:"matched_pattern"`      // Pattern that matched
+	MinApprovals   int    `json:"min_approvals"`        // Required approvals
 	RequestID      string `json:"request_id,omitempty"` // If pending approval exists
 }
 
@@ -144,11 +144,11 @@ func (s *IPCServer) checkApproval(command, sessionID, cwd string) (bool, string)
 
 // HookHealthResult is the result of a hook health check.
 type HookHealthResult struct {
-	Status        string `json:"status"`
-	Uptime        int64  `json:"uptime_seconds"`
-	PatternHash   string `json:"pattern_hash"`
-	PatternCount  int    `json:"pattern_count"`
-	ServerTime    string `json:"server_time"`
+	Status       string `json:"status"`
+	Uptime       int64  `json:"uptime_seconds"`
+	PatternHash  string `json:"pattern_hash"`
+	PatternCount int    `json:"pattern_count"`
+	ServerTime   string `json:"server_time"`
 }
 
 // handleHookHealth responds to hook health checks.

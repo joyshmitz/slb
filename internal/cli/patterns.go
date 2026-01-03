@@ -336,11 +336,11 @@ Examples:
 			// Confirm to user
 			out := output.New(output.Format(GetOutput()))
 			return out.Write(map[string]any{
-				"status":  "exported",
-				"format":  flagPatternFormat,
-				"file":    flagPatternOutputFile,
-				"hash":    engine.ComputeHash(),
-				"count":   engine.Export().Metadata.PatternCount,
+				"status": "exported",
+				"format": flagPatternFormat,
+				"file":   flagPatternOutputFile,
+				"hash":   engine.ComputeHash(),
+				"count":  engine.Export().Metadata.PatternCount,
 			})
 		}
 

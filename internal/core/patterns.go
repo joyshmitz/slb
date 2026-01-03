@@ -547,11 +547,11 @@ func MatchesPattern(cmd, pattern string) bool {
 
 // PatternExport represents the exported pattern set for external tools.
 type PatternExport struct {
-	Version     string                      `json:"version"`
-	GeneratedAt time.Time                   `json:"generated_at"`
-	SHA256      string                      `json:"sha256"`
-	Tiers       map[string]TierExport       `json:"tiers"`
-	Metadata    PatternExportMetadata       `json:"metadata"`
+	Version     string                `json:"version"`
+	GeneratedAt time.Time             `json:"generated_at"`
+	SHA256      string                `json:"sha256"`
+	Tiers       map[string]TierExport `json:"tiers"`
+	Metadata    PatternExportMetadata `json:"metadata"`
 }
 
 // TierExport represents a single tier's patterns for export.
@@ -570,8 +570,8 @@ type PatternDetails struct {
 
 // PatternExportMetadata contains summary information about the export.
 type PatternExportMetadata struct {
-	PatternCount int               `json:"pattern_count"`
-	TierCounts   map[string]int    `json:"tier_counts"`
+	PatternCount int            `json:"pattern_count"`
+	TierCounts   map[string]int `json:"tier_counts"`
 }
 
 // Export exports all patterns in a structured format suitable for external tools.

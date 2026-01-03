@@ -264,9 +264,9 @@ func runHookInstall(cmd *cobra.Command, args []string) error {
 
 	out := output.New(output.Format(GetOutput()))
 	return out.Write(map[string]any{
-		"status":        "installed",
-		"settings_path": settingsPath,
-		"hook_script":   hookScriptPath,
+		"status":          "installed",
+		"settings_path":   settingsPath,
+		"hook_script":     hookScriptPath,
 		"already_existed": found && !flagHookForce,
 	})
 }
@@ -328,7 +328,7 @@ func runHookUninstall(cmd *cobra.Command, args []string) error {
 						if hkMap, ok := hk.(map[string]any); ok {
 							if cmd, ok := hkMap["command"].(string); ok {
 								if filepath.Base(cmd) == "slb_guard.py" ||
-								   (len(cmd) > 7 && cmd[len(cmd)-13:] == "slb_guard.py") {
+									(len(cmd) >= 13 && cmd[len(cmd)-13:] == "slb_guard.py") {
 									isSLB = true
 									removed = true
 									break
@@ -404,7 +404,7 @@ func runHookStatus(cmd *cobra.Command, args []string) error {
 										if hkMap, ok := hk.(map[string]any); ok {
 											if cmd, ok := hkMap["command"].(string); ok {
 												if filepath.Base(cmd) == "slb_guard.py" ||
-												   (len(cmd) > 13 && cmd[len(cmd)-13:] == "slb_guard.py") {
+													(len(cmd) >= 13 && cmd[len(cmd)-13:] == "slb_guard.py") {
 													status["settings_configured"] = true
 													status["configured_command"] = cmd
 												}
