@@ -38,7 +38,7 @@ Coding agents can get tunnel vision, hallucinate, or misunderstand context. A se
 
 ```bash
 # One-liner install
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/slb/main/scripts/install.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/slb/main/scripts/install.sh?$(date +%s)" | bash
 
 # Or with go install
 go install github.com/Dicklesworthstone/slb/cmd/slb@latest
