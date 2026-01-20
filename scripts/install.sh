@@ -125,6 +125,9 @@ main() {
     echo "  slb daemon start      # Start approval daemon"
     echo "  slb run \"<command>\"   # Submit command for approval"
     echo ""
+    echo "Tip: You can also install via Homebrew:"
+    echo "  brew install dicklesworthstone/tap/slb"
+    echo ""
 }
 
 main

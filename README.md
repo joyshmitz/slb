@@ -36,16 +36,49 @@ Coding agents can get tunnel vision, hallucinate, or misunderstand context. A se
 
 ### Installation
 
+#### Recommended: Homebrew (macOS/Linux)
+
 ```bash
-# One-liner install
+brew install dicklesworthstone/tap/slb
+```
+
+This method provides:
+- Automatic updates via `brew upgrade`
+- Dependency management
+- Easy uninstall via `brew uninstall`
+
+#### Windows: Scoop
+
+```powershell
+scoop bucket add dicklesworthstone https://github.com/Dicklesworthstone/scoop-bucket
+scoop install dicklesworthstone/slb
+```
+
+#### Alternative: Direct Download
+
+Download the latest release for your platform:
+- [Linux x86_64](https://github.com/Dicklesworthstone/slb/releases/latest/download/slb-linux-amd64)
+- [macOS Intel](https://github.com/Dicklesworthstone/slb/releases/latest/download/slb-darwin-amd64)
+- [macOS ARM](https://github.com/Dicklesworthstone/slb/releases/latest/download/slb-darwin-arm64)
+- [Windows](https://github.com/Dicklesworthstone/slb/releases/latest/download/slb-windows-amd64.exe)
+
+#### Alternative: Install Script
+
+```bash
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/slb/main/scripts/install.sh?$(date +%s)" | bash
+```
 
-# Or with go install
-go install github.com/Dicklesworthstone/slb/cmd/slb@latest
+#### Build from Source
 
-# Or build from source
+```bash
 git clone https://github.com/Dicklesworthstone/slb.git
 cd slb && make build
+```
+
+#### Go Install
+
+```bash
+go install github.com/Dicklesworthstone/slb/cmd/slb@latest
 ```
 
 ### Initialize a Project
