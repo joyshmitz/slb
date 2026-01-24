@@ -13,18 +13,16 @@ log "Phase 1: Prerequisites"
 command -v slb || { log "FAIL: slb not found"; exit 1; }
 log "  PASS: slb found at $(command -v slb)"
 
-# Check for tru/tr binary (TOON encoder)
-# Note: Cargo.toml specifies "tru" but some builds produce "tr"
+# Check for tru binary (TOON encoder)
+HAS_TRU="false"
 if command -v tru >/dev/null 2>&1; then
     log "  PASS: tru found at $(command -v tru)"
-elif command -v tr >/dev/null 2>&1 && tr --help 2>&1 | grep -qi "toon"; then
-    log "  PASS: tr (TOON) found at $(command -v tr)"
+    HAS_TRU="true"
 elif [[ -x /data/projects/toon_rust/target/release/tru ]]; then
     log "  PASS: tru found at /data/projects/toon_rust/target/release/tru"
-elif [[ -x /data/projects/toon_rust/target/release/tr ]]; then
-    log "  PASS: tr found at /data/projects/toon_rust/target/release/tr"
+    HAS_TRU="true"
 else
-    log "  WARN: tru/tr not in PATH, will rely on fallback locations"
+    log "  WARN: tru not in PATH, will rely on fallback locations"
 fi
 
 # Phase 2: Basic functionality
@@ -45,8 +43,11 @@ toon_result=$(slb version --output toon 2>/dev/null || true)
 if [[ -n "$toon_result" && "$toon_result" != "{"* ]]; then
     log "  PASS: TOON output works (not JSON)"
 else
-    log "  FAIL: TOON output returned JSON or empty"
-    exit 1
+    if [[ "$HAS_TRU" == "true" ]]; then
+        log "  FAIL: TOON output returned JSON or empty"
+        exit 1
+    fi
+    log "  WARN: tru missing; TOON output fell back to JSON"
 fi
 
 # Test -t shorthand
@@ -62,21 +63,16 @@ log ""
 log "Phase 3: Round-trip Verification"
 
 json_output=$(slb version --output json 2>/dev/null)
-toon_output=$(slb version --output toon 2>/dev/null)
+toon_output=$(slb version --output toon 2>/dev/null || true)
 
-# Decode TOON back to JSON using tru/tr
-# Note: Binary may be named "tru" or "tr" depending on build
+# Decode TOON back to JSON using tru
 TRU_CMD=""
 if command -v tru >/dev/null 2>&1; then
     TRU_CMD="tru"
-elif command -v tr >/dev/null 2>&1 && tr --help 2>&1 | grep -qi "toon"; then
-    TRU_CMD="tr"
 elif [[ -x /data/projects/toon_rust/target/release/tru ]]; then
     TRU_CMD="/data/projects/toon_rust/target/release/tru"
-elif [[ -x /data/projects/toon_rust/target/release/tr ]]; then
-    TRU_CMD="/data/projects/toon_rust/target/release/tr"
 else
-    log "  SKIP: Cannot verify round-trip without tru/tr"
+    log "  SKIP: Cannot verify round-trip without tru"
 fi
 
 if [[ -n "$TRU_CMD" && -n "$toon_output" ]]; then
@@ -102,7 +98,7 @@ fi
 log ""
 log "Phase 4: Token Savings Verification"
 
-if [[ -n "$json_output" && -n "$toon_output" ]]; then
+if [[ "$HAS_TRU" == "true" && -n "$json_output" && -n "$toon_output" && "$toon_output" != "{"* ]]; then
     json_chars=$(echo -n "$json_output" | wc -c)
     toon_chars=$(echo -n "$toon_output" | wc -c)
     savings=$(( 100 - (toon_chars * 100 / json_chars) ))

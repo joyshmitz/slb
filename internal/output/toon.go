@@ -11,9 +11,9 @@ import (
 	"strings"
 )
 
-// TOONBinaryNames are the possible names of the TOON encoder/decoder binary.
-// The Cargo.toml specifies "tru" but some builds produce "tr".
-var TOONBinaryNames = []string{"tru", "tr"}
+// TOONBinaryName is the name of the TOON encoder/decoder binary.
+// The toon_rust CLI is installed as "tru" to avoid coreutils "tr".
+const TOONBinaryName = "tru"
 
 // findTOONBinary searches for the tru binary in common locations.
 func findTOONBinary() (string, error) {
@@ -23,31 +23,27 @@ func findTOONBinary() (string, error) {
 		return envPath, nil
 	}
 
-	// Check PATH for each possible binary name
-	for _, name := range TOONBinaryNames {
-		if path, err := exec.LookPath(name); err == nil {
-			if isToonRustBinary(path) {
-				return path, nil
-			}
+	// Check PATH
+	if path, err := exec.LookPath(TOONBinaryName); err == nil {
+		if isToonRustBinary(path) {
+			return path, nil
 		}
 	}
 
-	// Check common locations for each possible binary name
+	// Check common locations
 	home, _ := os.UserHomeDir()
-	for _, name := range TOONBinaryNames {
-		commonPaths := []string{
-			filepath.Join(home, ".local", "bin", name),
-			filepath.Join(home, "bin", name),
-			"/usr/local/bin/" + name,
-			// Development locations
-			"/data/projects/toon_rust/target/release/" + name,
-			"/data/projects/toon_rust/target/debug/" + name,
-		}
+	commonPaths := []string{
+		filepath.Join(home, ".local", "bin", TOONBinaryName),
+		filepath.Join(home, "bin", TOONBinaryName),
+		"/usr/local/bin/" + TOONBinaryName,
+		// Development locations
+		"/data/projects/toon_rust/target/release/" + TOONBinaryName,
+		"/data/projects/toon_rust/target/debug/" + TOONBinaryName,
+	}
 
-		for _, path := range commonPaths {
-			if _, err := os.Stat(path); err == nil && isToonRustBinary(path) {
-				return path, nil
-			}
+	for _, path := range commonPaths {
+		if _, err := os.Stat(path); err == nil && isToonRustBinary(path) {
+			return path, nil
 		}
 	}
 
@@ -120,7 +116,7 @@ func toonBinaryFromEnv() (string, error) {
 	for _, env := range []string{"TOON_TRU_BIN", "TOON_BIN", "TRU_PATH"} {
 		if val := strings.TrimSpace(os.Getenv(env)); val != "" {
 			if !isToonRustBinary(val) {
-				return "", fmt.Errorf("%s=%q does not appear to be toon_rust (expected tru or tr binary)", env, val)
+				return "", fmt.Errorf("%s=%q does not appear to be toon_rust (expected tru binary)", env, val)
 			}
 			return val, nil
 		}
@@ -146,18 +142,7 @@ func isToonRustBinary(path string) bool {
 	verOut, _ := exec.Command(path, "--version").CombinedOutput()
 	verLower := strings.ToLower(strings.TrimSpace(string(verOut)))
 	// Accept "tru X.Y.Z" or "toon_rust X.Y.Z" version formats
-	// Note: We check for "tru " but NOT "tr " because GNU/uutils coreutils
-	// also outputs "tr (GNU coreutils) X.Y.Z" which would be a false positive.
-	// The toon_rust binary outputs "tr 0.1.0" (no parentheses).
-	if strings.HasPrefix(verLower, "tru ") || strings.HasPrefix(verLower, "toon_rust ") {
-		return true
-	}
-	// Special case: toon_rust "tr" binary outputs "tr X.Y.Z" with just a version number
-	// GNU/uutils coreutils outputs "tr (GNU coreutils) X.Y.Z" or "/path/tr (uutils coreutils) X.Y.Z"
-	if strings.HasPrefix(verLower, "tr ") && !strings.Contains(verLower, "coreutils") {
-		return true
-	}
-	return false
+	return strings.HasPrefix(verLower, "tru ") || strings.HasPrefix(verLower, "toon_rust ")
 }
 
 func filepathBase(path string) string {
