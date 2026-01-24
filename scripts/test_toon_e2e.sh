@@ -17,7 +17,7 @@ log "  PASS: slb found at $(command -v slb)"
 # Note: Cargo.toml specifies "tru" but some builds produce "tr"
 if command -v tru >/dev/null 2>&1; then
     log "  PASS: tru found at $(command -v tru)"
-elif command -v tr >/dev/null 2>&1 && tr --version 2>&1 | grep -qi "toon"; then
+elif command -v tr >/dev/null 2>&1 && tr --help 2>&1 | grep -qi "toon"; then
     log "  PASS: tr (TOON) found at $(command -v tr)"
 elif [[ -x /data/projects/toon_rust/target/release/tru ]]; then
     log "  PASS: tru found at /data/projects/toon_rust/target/release/tru"
@@ -69,7 +69,7 @@ toon_output=$(slb version --output toon 2>/dev/null)
 TRU_CMD=""
 if command -v tru >/dev/null 2>&1; then
     TRU_CMD="tru"
-elif command -v tr >/dev/null 2>&1 && tr --version 2>&1 | grep -qi "toon"; then
+elif command -v tr >/dev/null 2>&1 && tr --help 2>&1 | grep -qi "toon"; then
     TRU_CMD="tr"
 elif [[ -x /data/projects/toon_rust/target/release/tru ]]; then
     TRU_CMD="/data/projects/toon_rust/target/release/tru"

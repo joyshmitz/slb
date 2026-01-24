@@ -120,7 +120,7 @@ func toonBinaryFromEnv() (string, error) {
 	for _, env := range []string{"TOON_TRU_BIN", "TOON_BIN", "TRU_PATH"} {
 		if val := strings.TrimSpace(os.Getenv(env)); val != "" {
 			if !isToonRustBinary(val) {
-				return "", fmt.Errorf("%s=%q does not appear to be toon_rust (expected tru)", env, val)
+				return "", fmt.Errorf("%s=%q does not appear to be toon_rust (expected tru or tr binary)", env, val)
 			}
 			return val, nil
 		}

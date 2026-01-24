@@ -116,14 +116,18 @@ func (w *Writer) Success(msg string) {
 
 // Error outputs an error message.
 func (w *Writer) Error(err error) {
-	if w.format == FormatJSON || w.format == FormatTOON {
+	payload := ErrorPayload{
+		Error:   "error",
+		Message: err.Error(),
+		Details: map[string]any{"code": 1},
+	}
+	if w.format == FormatJSON {
 		_ = OutputJSONError(err, 1)
+	} else if w.format == FormatTOON {
+		// Use TOON encoding for error output
+		_ = w.Write(payload)
 	} else if w.format == FormatYAML {
-		_ = OutputYAML(ErrorPayload{
-			Error:   "error",
-			Message: err.Error(),
-			Details: map[string]any{"code": 1},
-		})
+		_ = OutputYAML(payload)
 	} else {
 		fmt.Fprintf(w.errOut, "✗ %s\n", err.Error())
 	}
