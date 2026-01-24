@@ -19,6 +19,7 @@ const (
 	FormatText Format = "text"
 	FormatJSON Format = "json"
 	FormatYAML Format = "yaml"
+	FormatTOON Format = "toon"
 )
 
 // Writer handles formatted output.
@@ -83,6 +84,8 @@ func (w *Writer) Write(data any) error {
 		// Human-friendly output goes to stderr to keep stdout clean for piping.
 		_, err := fmt.Fprintf(w.errOut, "%v\n", data)
 		return err
+	case FormatTOON:
+		return w.writeTOON(data)
 	default:
 		return fmt.Errorf("unsupported format: %s", w.format)
 	}

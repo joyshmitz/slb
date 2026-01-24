@@ -23,6 +23,7 @@ var (
 	flagConfig    string
 	flagOutput    string
 	flagJSON      bool
+	flagTOON      bool
 	flagVerbose   bool
 	flagDB        string
 	flagActor     string
@@ -84,7 +85,7 @@ var versionCmd = &cobra.Command{
 		}
 
 		switch GetOutput() {
-		case "json", "yaml":
+		case "json", "yaml", "toon":
 			out := output.New(output.Format(GetOutput()))
 			return out.Write(payload)
 		case "text":
@@ -111,6 +112,9 @@ func Execute() error {
 func GetOutput() string {
 	if flagJSON {
 		return "json"
+	}
+	if flagTOON {
+		return "toon"
 	}
 	return flagOutput
 }
@@ -155,8 +159,9 @@ func GetActor() string {
 func init() {
 	// Global flags with short aliases as specified in plan
 	rootCmd.PersistentFlags().StringVarP(&flagConfig, "config", "c", "", "config file path")
-	rootCmd.PersistentFlags().StringVarP(&flagOutput, "output", "o", "text", "output format: text, json, yaml")
+	rootCmd.PersistentFlags().StringVarP(&flagOutput, "output", "o", "text", "output format: text, json, yaml, toon")
 	rootCmd.PersistentFlags().BoolVarP(&flagJSON, "json", "j", false, "shorthand for --output=json")
+	rootCmd.PersistentFlags().BoolVarP(&flagTOON, "toon", "t", false, "shorthand for --output=toon")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "verbose output")
 	rootCmd.PersistentFlags().StringVar(&flagDB, "db", "", "database path")
 	rootCmd.PersistentFlags().StringVar(&flagActor, "actor", "", "actor identifier")
