@@ -111,7 +111,7 @@ func runWatchDaemon(ctx context.Context, client *daemon.Client, out io.Writer) e
 						"request_id": watchEvent.RequestID,
 						"error":      err.Error(),
 					}
-					enc.Encode(errEvent)
+					_ = enc.Encode(errEvent)
 				}
 			}
 		}
@@ -309,7 +309,7 @@ func processPolledRequest(ctx context.Context, req *db.Request, enc *json.Encode
 					"request_id": req.ID,
 					"error":      err.Error(),
 				}
-				enc.Encode(errEvent)
+				_ = enc.Encode(errEvent)
 			}
 		}
 

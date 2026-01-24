@@ -55,7 +55,7 @@ func NewTCPServer(opts TCPServerOptions, logger *log.Logger) (*IPCServer, error)
 
 		// Require a handshake line from the client.
 		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		defer conn.SetReadDeadline(time.Time{})
+		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
 		if !scanner.Scan() {
 			if err := scanner.Err(); err != nil {

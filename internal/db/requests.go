@@ -47,9 +47,9 @@ func (db *DB) CreateRequest(r *Request) error {
 		r.ExpiresAt = &expiresAt
 	}
 
-	// Serialize complex fields
-	argvJSON, _ := json.Marshal(r.Command.Argv)
-	attachmentsJSON, _ := json.Marshal(r.Attachments)
+	// Serialize complex fields (errors intentionally ignored - empty JSON arrays are acceptable defaults)
+	argvJSON, _ := json.Marshal(r.Command.Argv)       //nolint:errcheck
+	attachmentsJSON, _ := json.Marshal(r.Attachments) //nolint:errcheck
 
 	_, err := db.Exec(`
 		INSERT INTO requests (
@@ -539,7 +539,7 @@ func (db *DB) FindExpiredRequests() ([]*Request, error) {
 // ComputeCommandHash computes the hash for a command spec.
 // Hash = sha256(raw + "\n" + cwd + "\n" + json(argv) + "\n" + shell_bool)
 func ComputeCommandHash(cmd CommandSpec) string {
-	argvJSON, _ := json.Marshal(cmd.Argv)
+	argvJSON, _ := json.Marshal(cmd.Argv) //nolint:errcheck
 	shellStr := "false"
 	if cmd.Shell {
 		shellStr = "true"
@@ -598,10 +598,10 @@ func scanRequest(row *sql.Row) (*Request, error) {
 		r.Command.DisplayRedacted = cmdDisplayRedacted.String
 	}
 	if argvJSON.Valid {
-		json.Unmarshal([]byte(argvJSON.String), &r.Command.Argv)
+		_ = json.Unmarshal([]byte(argvJSON.String), &r.Command.Argv)
 	}
 	if attachmentsJSON.Valid && attachmentsJSON.String != "null" {
-		json.Unmarshal([]byte(attachmentsJSON.String), &r.Attachments)
+		_ = json.Unmarshal([]byte(attachmentsJSON.String), &r.Attachments)
 	}
 	if justExpEffect.Valid {
 		r.Justification.ExpectedEffect = justExpEffect.String
@@ -626,16 +626,16 @@ func scanRequest(row *sql.Row) (*Request, error) {
 		}
 		if execExitCode.Valid {
 			var exitCode int
-			fmt.Sscanf(execExitCode.String, "%d", &exitCode)
+			_, _ = fmt.Sscanf(execExitCode.String, "%d", &exitCode)
 			r.Execution.ExitCode = &exitCode
 		}
 		if execDurationMs.Valid {
 			var durationMs int64
-			fmt.Sscanf(execDurationMs.String, "%d", &durationMs)
+			_, _ = fmt.Sscanf(execDurationMs.String, "%d", &durationMs)
 			r.Execution.DurationMs = &durationMs
 		}
 		if execAt.Valid {
-			t, _ := time.Parse(time.RFC3339, execAt.String)
+			t, _ := time.Parse(time.RFC3339, execAt.String) //nolint:errcheck
 			r.Execution.ExecutedAt = &t
 		}
 		if execBySessionID.Valid {
@@ -655,25 +655,25 @@ func scanRequest(row *sql.Row) (*Request, error) {
 			Path: rollbackPath.String,
 		}
 		if rollbackAt.Valid {
-			t, _ := time.Parse(time.RFC3339, rollbackAt.String)
+			t, _ := time.Parse(time.RFC3339, rollbackAt.String) //nolint:errcheck
 			r.Rollback.RolledBackAt = &t
 		}
 	}
 
-	// Timestamps
+	// Timestamps (errors intentionally ignored - zero time is acceptable fallback)
 	if createdAt.Valid {
-		r.CreatedAt, _ = time.Parse(time.RFC3339, createdAt.String)
+		r.CreatedAt, _ = time.Parse(time.RFC3339, createdAt.String) //nolint:errcheck
 	}
 	if resolvedAt.Valid {
-		t, _ := time.Parse(time.RFC3339, resolvedAt.String)
+		t, _ := time.Parse(time.RFC3339, resolvedAt.String) //nolint:errcheck
 		r.ResolvedAt = &t
 	}
 	if expiresAt.Valid {
-		t, _ := time.Parse(time.RFC3339, expiresAt.String)
+		t, _ := time.Parse(time.RFC3339, expiresAt.String) //nolint:errcheck
 		r.ExpiresAt = &t
 	}
 	if approvalExpiresAt.Valid {
-		t, _ := time.Parse(time.RFC3339, approvalExpiresAt.String)
+		t, _ := time.Parse(time.RFC3339, approvalExpiresAt.String) //nolint:errcheck
 		r.ApprovalExpiresAt = &t
 	}
 
@@ -728,10 +728,10 @@ func scanRequests(rows *sql.Rows) ([]*Request, error) {
 			r.Command.DisplayRedacted = cmdDisplayRedacted.String
 		}
 		if argvJSON.Valid {
-			json.Unmarshal([]byte(argvJSON.String), &r.Command.Argv)
+			_ = json.Unmarshal([]byte(argvJSON.String), &r.Command.Argv)
 		}
 		if attachmentsJSON.Valid && attachmentsJSON.String != "null" {
-			json.Unmarshal([]byte(attachmentsJSON.String), &r.Attachments)
+			_ = json.Unmarshal([]byte(attachmentsJSON.String), &r.Attachments)
 		}
 		if justExpEffect.Valid {
 			r.Justification.ExpectedEffect = justExpEffect.String
@@ -756,16 +756,16 @@ func scanRequests(rows *sql.Rows) ([]*Request, error) {
 			}
 			if execExitCode.Valid {
 				var exitCode int
-				fmt.Sscanf(execExitCode.String, "%d", &exitCode)
+				_, _ = fmt.Sscanf(execExitCode.String, "%d", &exitCode)
 				r.Execution.ExitCode = &exitCode
 			}
 			if execDurationMs.Valid {
 				var durationMs int64
-				fmt.Sscanf(execDurationMs.String, "%d", &durationMs)
+				_, _ = fmt.Sscanf(execDurationMs.String, "%d", &durationMs)
 				r.Execution.DurationMs = &durationMs
 			}
 			if execAt.Valid {
-				t, _ := time.Parse(time.RFC3339, execAt.String)
+				t, _ := time.Parse(time.RFC3339, execAt.String) //nolint:errcheck
 				r.Execution.ExecutedAt = &t
 			}
 			if execBySessionID.Valid {
@@ -785,25 +785,25 @@ func scanRequests(rows *sql.Rows) ([]*Request, error) {
 				Path: rollbackPath.String,
 			}
 			if rollbackAt.Valid {
-				t, _ := time.Parse(time.RFC3339, rollbackAt.String)
+				t, _ := time.Parse(time.RFC3339, rollbackAt.String) //nolint:errcheck
 				r.Rollback.RolledBackAt = &t
 			}
 		}
 
-		// Timestamps
+		// Timestamps (errors intentionally ignored - zero time is acceptable fallback)
 		if createdAt.Valid {
-			r.CreatedAt, _ = time.Parse(time.RFC3339, createdAt.String)
+			r.CreatedAt, _ = time.Parse(time.RFC3339, createdAt.String) //nolint:errcheck
 		}
 		if resolvedAt.Valid {
-			t, _ := time.Parse(time.RFC3339, resolvedAt.String)
+			t, _ := time.Parse(time.RFC3339, resolvedAt.String) //nolint:errcheck
 			r.ResolvedAt = &t
 		}
 		if expiresAt.Valid {
-			t, _ := time.Parse(time.RFC3339, expiresAt.String)
+			t, _ := time.Parse(time.RFC3339, expiresAt.String) //nolint:errcheck
 			r.ExpiresAt = &t
 		}
 		if approvalExpiresAt.Valid {
-			t, _ := time.Parse(time.RFC3339, approvalExpiresAt.String)
+			t, _ := time.Parse(time.RFC3339, approvalExpiresAt.String) //nolint:errcheck
 			r.ApprovalExpiresAt = &t
 		}
 

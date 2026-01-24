@@ -221,7 +221,7 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 		switch m.Version {
 		case 2:
 			if err := addColumnIfMissing(ctx, tx, "sessions", "rate_limit_reset_at", "TEXT"); err != nil {
-				tx.Rollback()
+				_ = tx.Rollback()
 				return fmt.Errorf("migration %d (%s) failed: %w", m.Version, m.Name, err)
 			}
 		case 3:
@@ -234,19 +234,19 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 			}
 			for _, col := range cols {
 				if err := addColumnIfMissing(ctx, tx, "execution_outcomes", col.name, col.def); err != nil {
-					tx.Rollback()
+					_ = tx.Rollback()
 					return fmt.Errorf("migration %d (%s) failed: %w", m.Version, m.Name, err)
 				}
 			}
 		default:
 			if _, err := tx.ExecContext(ctx, m.Up); err != nil {
-				tx.Rollback()
+				_ = tx.Rollback()
 				return fmt.Errorf("migration %d (%s) failed: %w", m.Version, m.Name, err)
 			}
 		}
 
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)`, m.Version, time.Now().UTC().Format(time.RFC3339)); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("record migration %d: %w", m.Version, err)
 		}
 
