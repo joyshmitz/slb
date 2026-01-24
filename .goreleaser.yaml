@@ -34,7 +34,8 @@ builds:
 
 archives:
   - id: default
-    format: tar.gz
+    formats:
+      - tar.gz
     name_template: >-
       {{ .ProjectName }}_
       {{- .Version }}_
@@ -42,7 +43,8 @@ archives:
       {{- .Arch }}
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
     files:
       - README*
       - PLAN_TO_MAKE_SLB.md
@@ -92,22 +94,18 @@ release:
   prerelease: auto
   name_template: "v{{.Version}}"
 
-brews:
+homebrew_casks:
   - name: slb
+    binaries:
+      - slb
     repository:
       owner: Dicklesworthstone
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
+    directory: Casks
     homepage: https://github.com/Dicklesworthstone/slb
     description: "Simultaneous Launch Button - Two-person rule for dangerous commands"
-    license: MIT
-    install: |
-      bin.install "slb"
-      generate_completions_from_executable(bin/"slb", "completion")
-    test: |
-      system "#{bin}/slb", "version"
     caveats: |
       SLB (Simultaneous Launch Button) implements two-person authorization.
 
