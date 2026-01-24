@@ -107,7 +107,7 @@ func (w *Writer) WriteNDJSON(data any) error {
 
 // Success outputs a success message.
 func (w *Writer) Success(msg string) {
-	if w.format == FormatJSON || w.format == FormatYAML {
+	if w.format == FormatJSON || w.format == FormatYAML || w.format == FormatTOON {
 		_ = w.Write(map[string]any{"status": "success", "message": msg})
 	} else {
 		fmt.Fprintf(w.errOut, "✓ %s\n", msg)
@@ -116,7 +116,7 @@ func (w *Writer) Success(msg string) {
 
 // Error outputs an error message.
 func (w *Writer) Error(err error) {
-	if w.format == FormatJSON {
+	if w.format == FormatJSON || w.format == FormatTOON {
 		_ = OutputJSONError(err, 1)
 	} else if w.format == FormatYAML {
 		_ = OutputYAML(ErrorPayload{
