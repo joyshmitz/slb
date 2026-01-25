@@ -1,5 +1,6 @@
 # golangci-lint configuration for slb
 # https://golangci-lint.run/usage/configuration/
+# Updated for golangci-lint v2.x format
 version: "2"
 
 run:
@@ -13,74 +14,75 @@ linters:
     - govet
     - ineffassign
     - staticcheck
-    - gofmt
-    - goimports
   disable:
     # Disable unused linter - too many false positives in development
     - unused
+  settings:
+    errcheck:
+      # Don't check error returns in defer statements in test files
+      check-type-assertions: false
+      check-blank: false
+      # Exclude common patterns that are safe to ignore
+      exclude-functions:
+        # In test code, these are often cleanup operations where failure doesn't matter
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*database/sql.Tx).Rollback
+        - (*database/sql.DB).Close
+        - (net.Conn).Close
+        - (*net.Conn).SetReadDeadline
+        - os.Chmod
+        - io.Copy
+        - (*bytes.Buffer).Write
+        - (net.Conn).Write
+        - os.MkdirAll
+        - json.Unmarshal
+        - (*bytes.Buffer).ReadFrom
+  exclusions:
+    # Exclude some issues in test files
+    rules:
+      # Allow unchecked error returns in test cleanup (defer statements)
+      - path: _test\.go
+        linters:
+          - errcheck
 
-linters-settings:
-  errcheck:
-    # Don't check error returns in defer statements in test files
-    check-type-assertions: false
-    check-blank: false
-    # Exclude common patterns that are safe to ignore
-    exclude-functions:
-      # In test code, these are often cleanup operations where failure doesn't matter
-      - (io.Closer).Close
-      - (*os.File).Close
-      - (*database/sql.Tx).Rollback
-      - (*database/sql.DB).Close
-      - (net.Conn).Close
-      - (*net.Conn).SetReadDeadline
-      - os.Chmod
-      - io.Copy
-      - (*bytes.Buffer).Write
-      - (net.Conn).Write
-      - os.MkdirAll
-      - json.Unmarshal
-      - (*bytes.Buffer).ReadFrom
+      # Ignore ineffassign for intentional reassignments
+      - linters:
+          - ineffassign
+        text: "ineffectual assignment"
 
-issues:
-  # Exclude some issues in test files
-  exclude-rules:
-    # Allow unchecked error returns in test cleanup (defer statements)
-    - path: _test\.go
-      linters:
-        - errcheck
+      # Ignore gosimple suggestions in existing code
+      - linters:
+          - gosimple
+        text: "S1008|S1017|S1030|S1039"
 
-    # Ignore ineffassign for intentional reassignments
-    - linters:
-        - ineffassign
-      text: "ineffectual assignment"
+      # Ignore deprecated API warnings - these are backwards compatibility concerns
+      - linters:
+          - staticcheck
+        text: "SA1019"
 
-    # Ignore gosimple suggestions in existing code
-    - linters:
-        - gosimple
-      text: "S1008|S1017|S1030|S1039"
+      # Ignore nil context in tests
+      - path: _test\.go
+        linters:
+          - staticcheck
+        text: "SA1012"
 
-    # Ignore deprecated API warnings - these are backwards compatibility concerns
-    - linters:
-        - staticcheck
-      text: "SA1019"
+      # Ignore empty branch checks - these are often intentional patterns
+      - linters:
+          - staticcheck
+        text: "SA9003"
 
-    # Ignore nil context in tests
-    - path: _test\.go
-      linters:
-        - staticcheck
-      text: "SA1012"
+      # Ignore unused value warnings in development code
+      - linters:
+          - staticcheck
+        text: "SA4006"
 
-    # Ignore empty branch checks - these are often intentional patterns
-    - linters:
-        - staticcheck
-      text: "SA9003"
+      # Ignore possible nil pointer dereference in test helpers
+      - linters:
+          - staticcheck
+        text: "SA5011"
 
-    # Ignore unused value warnings in development code
-    - linters:
-        - staticcheck
-      text: "SA4006"
-
-    # Ignore possible nil pointer dereference in test helpers
-    - linters:
-        - staticcheck
-      text: "SA5011"
+formatters:
+  enable:
+    - gofmt
+    - goimports
