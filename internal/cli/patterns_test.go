@@ -27,7 +27,7 @@ func newTestPatternsCmd(dbPath string) *cobra.Command {
 		Use:   "patterns",
 		Short: "Manage command classification patterns",
 	}
-	patCmd.PersistentFlags().StringVarP(&flagPatternTier, "tier", "t", "", "risk tier")
+	patCmd.PersistentFlags().StringVarP(&flagPatternTier, "tier", "T", "", "risk tier")
 	patCmd.PersistentFlags().StringVarP(&flagPatternReason, "reason", "r", "", "reason")
 
 	listCmd := &cobra.Command{
@@ -142,7 +142,7 @@ func TestPatternsListCommand_FilterByTier(t *testing.T) {
 	resetPatternsFlags()
 
 	cmd := newTestPatternsCmd(h.DBPath)
-	stdout, err := executeCommandCapture(t, cmd, "patterns", "list", "-t", "critical", "-j")
+	stdout, err := executeCommandCapture(t, cmd, "patterns", "list", "-T", "critical", "-j")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -166,7 +166,7 @@ func TestPatternsListCommand_InvalidTier(t *testing.T) {
 	resetPatternsFlags()
 
 	cmd := newTestPatternsCmd(h.DBPath)
-	_, err := executeCommandCapture(t, cmd, "patterns", "list", "-t", "invalid-tier", "-j")
+	_, err := executeCommandCapture(t, cmd, "patterns", "list", "-T", "invalid-Tier", "-j")
 
 	if err == nil {
 		t.Fatal("expected error for invalid tier")
@@ -289,7 +289,7 @@ func TestPatternsAddCommand_RequiresTier(t *testing.T) {
 	_, err := executeCommandCapture(t, cmd, "patterns", "add", "^my-pattern$", "-j")
 
 	if err == nil {
-		t.Fatal("expected error when --tier is missing")
+		t.Fatal("expected error when --Tier is missing")
 	}
 	if !strings.Contains(err.Error(), "--tier is required") {
 		t.Errorf("unexpected error: %v", err)
@@ -302,7 +302,7 @@ func TestPatternsAddCommand_AddsPattern(t *testing.T) {
 
 	cmd := newTestPatternsCmd(h.DBPath)
 	stdout, err := executeCommandCapture(t, cmd, "patterns", "add", "^test-pattern$",
-		"-t", "dangerous",
+		"-T", "dangerous",
 		"-r", "Test pattern",
 		"-j",
 	)
@@ -395,7 +395,7 @@ func TestPatternsSuggestCommand_RequiresTier(t *testing.T) {
 	_, err := executeCommandCapture(t, cmd, "patterns", "suggest", "^suggested-pattern$", "-j")
 
 	if err == nil {
-		t.Fatal("expected error when --tier is missing")
+		t.Fatal("expected error when --Tier is missing")
 	}
 	if !strings.Contains(err.Error(), "--tier is required") {
 		t.Errorf("unexpected error: %v", err)
@@ -408,7 +408,7 @@ func TestPatternsSuggestCommand_CreatesSuggestion(t *testing.T) {
 
 	cmd := newTestPatternsCmd(h.DBPath)
 	stdout, err := executeCommandCapture(t, cmd, "patterns", "suggest", "^suggested-pattern$",
-		"-t", "caution",
+		"-T", "caution",
 		"-j",
 	)
 
@@ -479,7 +479,7 @@ func TestPatternsListCommand_TextOutputWithDescriptions(t *testing.T) {
 	// First, add a pattern with a description (reason becomes description)
 	cmd := newTestPatternsCmd(h.DBPath)
 	_, err := executeCommandCapture(t, cmd, "patterns", "add", "^test-with-desc$",
-		"-t", "dangerous",
+		"-T", "dangerous",
 		"-r", "This is a test description",
 		"-j",
 	)
@@ -492,7 +492,7 @@ func TestPatternsListCommand_TextOutputWithDescriptions(t *testing.T) {
 
 	// List patterns in text format (no -j flag)
 	cmd = newTestPatternsCmd(h.DBPath)
-	stdout, err := executeCommandCapture(t, cmd, "patterns", "list", "-t", "dangerous")
+	stdout, err := executeCommandCapture(t, cmd, "patterns", "list", "-T", "dangerous")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
