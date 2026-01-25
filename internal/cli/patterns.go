@@ -21,7 +21,7 @@ var (
 
 func init() {
 	// patterns command
-	patternsCmd.PersistentFlags().StringVarP(&flagPatternTier, "tier", "t", "", "risk tier (critical, dangerous, caution, safe)")
+	patternsCmd.PersistentFlags().StringVarP(&flagPatternTier, "tier", "T", "", "risk tier (critical, dangerous, caution, safe)")
 	patternsCmd.PersistentFlags().StringVarP(&flagPatternReason, "reason", "r", "", "reason for adding/removing pattern")
 
 	// patterns test/check flags
