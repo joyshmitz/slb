@@ -37,3 +37,6 @@ slb
 # bv (beads viewer) local config and caches
 .bv/
 a.out
+
+# SQLite in-memory database artifacts
+:memory:
