@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,24 @@ import (
 	"github.com/Dicklesworthstone/slb/internal/db"
 	"github.com/Dicklesworthstone/slb/internal/testutil"
 )
+
+// syncBuffer is a thread-safe wrapper around bytes.Buffer
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *syncBuffer) Write(p []byte) (n int, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
 
 func TestRunWatchPolling_EmitsEvents(t *testing.T) {
 	h := testutil.NewHarness(t)
@@ -35,8 +54,8 @@ func TestRunWatchPolling_EmitsEvents(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Use buffer to capture output
-	var buf bytes.Buffer
+	// Use thread-safe buffer to capture output
+	var buf syncBuffer
 
 	// Run watch in background
 	errCh := make(chan error, 1)
@@ -101,7 +120,7 @@ func TestRunWatchPolling_UpdatesOnStatusChange(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var buf bytes.Buffer
+	var buf syncBuffer
 	go func() { _ = runWatchPolling(ctx, &buf) }()
 
 	// Wait for initial pending event
@@ -155,7 +174,7 @@ func TestRunWatchPolling_AutoApproveCaution(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var buf bytes.Buffer
+	var buf syncBuffer
 	go func() { _ = runWatchPolling(ctx, &buf) }()
 
 	// Wait for approval

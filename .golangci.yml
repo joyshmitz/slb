@@ -10,7 +10,6 @@ run:
 linters:
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
@@ -51,9 +50,9 @@ linters:
           - ineffassign
         text: "ineffectual assignment"
 
-      # Ignore gosimple suggestions in existing code
+      # Ignore staticcheck style suggestions in existing code
       - linters:
-          - gosimple
+          - staticcheck
         text: "S1008|S1017|S1030|S1039"
 
       # Ignore deprecated API warnings - these are backwards compatibility concerns
