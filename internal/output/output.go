@@ -24,9 +24,10 @@ const (
 
 // Writer handles formatted output.
 type Writer struct {
-	format Format
-	out    io.Writer
-	errOut io.Writer
+	format    Format
+	out       io.Writer
+	errOut    io.Writer
+	showStats bool
 }
 
 // Option configures the Writer.
@@ -46,6 +47,13 @@ func WithErrorOutput(w io.Writer) Option {
 	}
 }
 
+// WithStats enables token savings statistics output.
+func WithStats(show bool) Option {
+	return func(wr *Writer) {
+		wr.showStats = show
+	}
+}
+
 // New creates a new output writer.
 func New(format Format, opts ...Option) *Writer {
 	w := &Writer{
@@ -61,6 +69,16 @@ func New(format Format, opts ...Option) *Writer {
 
 // Write outputs data in the configured format.
 func (w *Writer) Write(data any) error {
+	// Pre-compute JSON for stats if needed
+	var jsonBytes []byte
+	if w.showStats {
+		var err error
+		jsonBytes, err = json.Marshal(data)
+		if err == nil {
+			w.printStats(jsonBytes)
+		}
+	}
+
 	switch w.format {
 	case FormatJSON:
 		enc := json.NewEncoder(w.out)
@@ -88,6 +106,43 @@ func (w *Writer) Write(data any) error {
 		return w.writeTOON(data)
 	default:
 		return fmt.Errorf("unsupported format: %s", w.format)
+	}
+}
+
+// printStats outputs token savings comparison to stderr.
+func (w *Writer) printStats(jsonBytes []byte) {
+	jsonSize := len(jsonBytes)
+
+	if w.format == FormatTOON {
+		// For TOON mode, show actual savings
+		toonStr, err := EncodeTOON(json.RawMessage(jsonBytes))
+		if err != nil {
+			fmt.Fprintf(w.errOut, "[slb-toon] JSON: %d bytes (TOON encoding failed)\n", jsonSize)
+			return
+		}
+		toonSize := len(toonStr)
+		savings := 0
+		if jsonSize > 0 {
+			savings = 100 - (toonSize * 100 / jsonSize)
+		}
+		fmt.Fprintf(w.errOut, "[slb-toon] JSON: %d bytes, TOON: %d bytes (%d%% savings)\n", jsonSize, toonSize, savings)
+	} else {
+		// For JSON/YAML mode, show potential TOON savings
+		if !TOONAvailable() {
+			fmt.Fprintf(w.errOut, "[slb-toon] JSON: %d bytes (TOON unavailable for comparison)\n", jsonSize)
+			return
+		}
+		toonStr, err := EncodeTOON(json.RawMessage(jsonBytes))
+		if err != nil {
+			fmt.Fprintf(w.errOut, "[slb-toon] JSON: %d bytes (TOON unavailable for comparison)\n", jsonSize)
+			return
+		}
+		toonSize := len(toonStr)
+		savings := 0
+		if jsonSize > 0 {
+			savings = 100 - (toonSize * 100 / jsonSize)
+		}
+		fmt.Fprintf(w.errOut, "[slb-toon] JSON: %d bytes, TOON would be: %d bytes (%d%% potential savings)\n", jsonSize, toonSize, savings)
 	}
 }
 

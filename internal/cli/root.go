@@ -24,6 +24,7 @@ var (
 	flagOutput    string
 	flagJSON      bool
 	flagTOON      bool
+	flagStats     bool
 	flagVerbose   bool
 	flagDB        string
 	flagActor     string
@@ -86,7 +87,7 @@ var versionCmd = &cobra.Command{
 
 		switch GetOutput() {
 		case "json", "yaml", "toon":
-			out := output.New(output.Format(GetOutput()))
+			out := output.New(output.Format(GetOutput()), output.WithStats(GetStats()))
 			return out.Write(payload)
 		case "text":
 			fmt.Printf("slb %s\n", version)
@@ -109,14 +110,39 @@ func Execute() error {
 }
 
 // GetOutput returns the configured output format.
+// Precedence: CLI flags > SLB_OUTPUT_FORMAT env > TOON_DEFAULT_FORMAT env > default
 func GetOutput() string {
+	// CLI flags have highest precedence
 	if flagJSON {
 		return "json"
 	}
 	if flagTOON {
 		return "toon"
 	}
+	if flagOutput != "text" {
+		return flagOutput
+	}
+
+	// Check environment variables
+	if envFormat := os.Getenv("SLB_OUTPUT_FORMAT"); envFormat != "" {
+		switch envFormat {
+		case "json", "yaml", "toon", "text":
+			return envFormat
+		}
+	}
+	if envFormat := os.Getenv("TOON_DEFAULT_FORMAT"); envFormat != "" {
+		switch envFormat {
+		case "json", "yaml", "toon", "text":
+			return envFormat
+		}
+	}
+
 	return flagOutput
+}
+
+// GetStats returns whether to show token savings statistics.
+func GetStats() bool {
+	return flagStats
 }
 
 // GetDB returns the database path.
@@ -159,9 +185,10 @@ func GetActor() string {
 func init() {
 	// Global flags with short aliases as specified in plan
 	rootCmd.PersistentFlags().StringVarP(&flagConfig, "config", "c", "", "config file path")
-	rootCmd.PersistentFlags().StringVarP(&flagOutput, "output", "o", "text", "output format: text, json, yaml, toon")
+	rootCmd.PersistentFlags().StringVarP(&flagOutput, "output", "o", "text", "output format: text, json, yaml, toon (env: SLB_OUTPUT_FORMAT, TOON_DEFAULT_FORMAT)")
 	rootCmd.PersistentFlags().BoolVarP(&flagJSON, "json", "j", false, "shorthand for --output=json")
 	rootCmd.PersistentFlags().BoolVarP(&flagTOON, "toon", "t", false, "shorthand for --output=toon")
+	rootCmd.PersistentFlags().BoolVar(&flagStats, "stats", false, "show token savings statistics (JSON vs TOON bytes)")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "verbose output")
 	rootCmd.PersistentFlags().StringVar(&flagDB, "db", "", "database path")
 	rootCmd.PersistentFlags().StringVar(&flagActor, "actor", "", "actor identifier")
