@@ -40,3 +40,9 @@ a.out
 
 # SQLite in-memory database artifacts
 :memory:
+
+# macOS resource forks
+._*
+
+# Beads ephemeral files
+.beads/last-touched
