@@ -137,9 +137,35 @@ This is useful for Claude Code hooks integration.`,
 			resp["matched_segments"] = segments
 		}
 
-		out := output.New(output.Format(GetOutput()))
-		if err := out.Write(resp); err != nil {
-			return err
+		// Handle output format
+		format := GetOutput()
+		if format == "text" {
+			// Human-readable text output
+			fmt.Printf("Command:    %s\n", command)
+			if tier, ok := resp["tier"].(string); ok && tier != "" {
+				fmt.Printf("Tier:       %s\n", strings.ToUpper(tier))
+			} else {
+				fmt.Printf("Tier:       (none)\n")
+			}
+			fmt.Printf("Safe:       %v\n", result.IsSafe)
+			fmt.Printf("Approval:   %v\n", result.NeedsApproval)
+			if result.NeedsApproval {
+				fmt.Printf("Min Approvals: %d\n", result.MinApprovals)
+			}
+			if result.MatchedPattern != "" {
+				fmt.Printf("Pattern:    %s\n", result.MatchedPattern)
+			}
+			if len(result.MatchedSegments) > 0 {
+				fmt.Printf("Segments:\n")
+				for _, seg := range result.MatchedSegments {
+					fmt.Printf("  - %s (%s)\n", seg.Segment, seg.Tier)
+				}
+			}
+		} else {
+			out := output.New(output.Format(format))
+			if err := out.Write(resp); err != nil {
+				return err
+			}
 		}
 
 		// Exit code handling for hooks integration
