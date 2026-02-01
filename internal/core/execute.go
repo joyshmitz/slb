@@ -222,10 +222,14 @@ func (e *Executor) ExecuteApprovedRequest(ctx context.Context, opts ExecuteOptio
 		if errors.Is(err, context.DeadlineExceeded) {
 			result.TimedOut = true
 			result.Error = ErrExecutionTimeout
-			_ = e.db.UpdateRequestStatus(opts.RequestID, db.StatusTimedOut)
+			if statusErr := e.db.UpdateRequestStatus(opts.RequestID, db.StatusTimedOut); statusErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to update status to timed_out: %v\n", statusErr)
+			}
 		} else {
 			result.Error = err
-			_ = e.db.UpdateRequestStatus(opts.RequestID, db.StatusExecutionFailed)
+			if statusErr := e.db.UpdateRequestStatus(opts.RequestID, db.StatusExecutionFailed); statusErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to update status to execution_failed: %v\n", statusErr)
+			}
 		}
 	} else {
 		result.ExitCode = cmdResult.ExitCode
@@ -234,9 +238,13 @@ func (e *Executor) ExecuteApprovedRequest(ctx context.Context, opts ExecuteOptio
 
 		// Determine final status based on exit code
 		if cmdResult.ExitCode == 0 {
-			_ = e.db.UpdateRequestStatus(opts.RequestID, db.StatusExecuted)
+			if statusErr := e.db.UpdateRequestStatus(opts.RequestID, db.StatusExecuted); statusErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to update status to executed: %v\n", statusErr)
+			}
 		} else {
-			_ = e.db.UpdateRequestStatus(opts.RequestID, db.StatusExecutionFailed)
+			if statusErr := e.db.UpdateRequestStatus(opts.RequestID, db.StatusExecutionFailed); statusErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to update status to execution_failed: %v\n", statusErr)
+			}
 		}
 	}
 
@@ -248,7 +256,9 @@ func (e *Executor) ExecuteApprovedRequest(ctx context.Context, opts ExecuteOptio
 		exec.ExitCode = &exitCode
 		exec.DurationMs = &durationMs
 	}
-	_ = e.db.UpdateRequestExecution(opts.RequestID, exec)
+	if execErr := e.db.UpdateRequestExecution(opts.RequestID, exec); execErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to update execution details: %v\n", execErr)
+	}
 
 	// Notify (best effort)
 	_ = e.notifier.NotifyRequestExecuted(request, exec, result.ExitCode)
