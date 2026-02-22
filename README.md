@@ -1,7 +1,7 @@
 # Simultaneous Launch Button (slb)
 
 [![Go Version](https://img.shields.io/badge/go-1.21+-blue.svg)](https://golang.org)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT%2BOpenAI%2FAnthropic%20Rider-blue.svg)](LICENSE)
 [![Build Status](https://github.com/Dicklesworthstone/slb/workflows/CI/badge.svg)](https://github.com/Dicklesworthstone/slb/actions)
 
 A cross-platform CLI that implements a **two-person rule** for running potentially destructive commands from AI coding agents.
@@ -1192,4 +1192,4 @@ slb session list --json
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) for details.
+MIT License (with OpenAI/Anthropic Rider) — see [LICENSE](LICENSE) for details.
