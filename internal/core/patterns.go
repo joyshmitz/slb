@@ -315,6 +315,22 @@ func (e *PatternEngine) classifyCompoundCommand(normalized *NormalizedCommand, c
 			if highestTier == "" || highestTier == RiskTier(RiskSafe) {
 				highestTier = RiskTierCaution
 			}
+		} else {
+			// Fallback SQL detection
+			lowerRaw := strings.ToLower(segment)
+			if strings.Contains(lowerRaw, "delete from") {
+				if !strings.Contains(lowerRaw, "where") {
+					segmentMatch.Tier = RiskTierCritical
+					segmentMatch.MatchedPattern = "fallback_sql_delete_no_where"
+					highestTier = RiskTierCritical
+				} else {
+					segmentMatch.Tier = RiskTierDangerous
+					segmentMatch.MatchedPattern = "fallback_sql_delete_with_where"
+					if highestTier != RiskTierCritical {
+						highestTier = RiskTierDangerous
+					}
+				}
+			}
 		}
 
 		if segmentMatch.MatchedPattern != "" {
