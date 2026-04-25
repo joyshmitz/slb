@@ -165,7 +165,22 @@ jobs:
       - name: Verify Linux binary
         run: |
           set -euo pipefail
-          BIN="$(ls -1 dist/slb_*_linux_amd64*/slb 2>/dev/null | head -n 1)"
+          # Look for a built binary in any dist subdir, then fall back to
+          # extracting the linux/amd64 tar.gz. Goreleaser's per-target
+          # subdirectory naming shifted between minor versions, so we cannot
+          # rely on a fixed pattern like dist/slb_*_linux_amd64/slb.
+          BIN="$(find dist -type f -name slb -path '*linux*amd64*' 2>/dev/null | head -n 1)"
+          if [ -z "${BIN}" ]; then
+            ARCHIVE="$(ls -1 dist/slb_*_linux_amd64.tar.gz 2>/dev/null | head -n 1)"
+            if [ -z "${ARCHIVE}" ]; then
+              echo "::error::no linux/amd64 binary or archive found under dist/"
+              ls -lR dist/ || true
+              exit 1
+            fi
+            mkdir -p dist/_verify
+            tar -xzf "${ARCHIVE}" -C dist/_verify
+            BIN="$(find dist/_verify -type f -name slb | head -n 1)"
+          fi
           echo "Using binary: ${BIN}"
           chmod +x "${BIN}"
           "${BIN}" version
