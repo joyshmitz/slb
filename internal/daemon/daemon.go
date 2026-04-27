@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/slb/internal/config"
+	"github.com/Dicklesworthstone/slb/internal/core"
 	"github.com/Dicklesworthstone/slb/internal/db"
 	"github.com/Dicklesworthstone/slb/internal/utils"
 	"github.com/charmbracelet/log"
@@ -161,6 +162,16 @@ func RunDaemon(ctx context.Context, opts ServerOptions) error {
 		cfg = loaded
 	}
 
+	// Merge persisted custom_patterns from `.slb/state.db` into the
+	// shared engine so the daemon's classify path enforces the same
+	// rules `slb patterns add` persisted (issue #2 daemon-side gap).
+	// Without this, a client that goes through the daemon would
+	// only ever see the 52 builtins, while the offline fallback in
+	// the generated `slb_guard.py` (post-fix) would see customs —
+	// the daemon-vs-fallback divergence would surface as
+	// "interception works only when the daemon is down."
+	loadDaemonCustomPatterns(projectPath, logger)
+
 	notifications := NewNotificationManager(projectPath, cfg.Notifications, logger, nil)
 	go notifications.Run(signalCtx, 10*time.Second)
 
@@ -301,4 +312,97 @@ func readPIDFile(path string) (int, error) {
 		return 0, fmt.Errorf("invalid pid: %w", err)
 	}
 	return pid, nil
+}
+
+// loadDaemonCustomPatterns merges every row from the project's
+// custom_patterns table into the shared core.PatternEngine. Mirrors
+// the loader in internal/cli/patterns.go so the daemon classify
+// path applies the same rules `slb patterns add` persisted
+// (issue #2 daemon-side gap).
+//
+// Best-effort: a missing project DB or a malformed row is logged
+// at warn level and the daemon continues with whichever subset of
+// patterns loaded successfully. A pattern that won't compile is
+// also skipped — taking the daemon down because of one bad row
+// would be the wrong tradeoff for a safety rail.
+//
+// Idempotent across calls: existing engine entries are not
+// re-added, so this can run at startup AND on a future reload
+// signal without duplicating in-memory state.
+func loadDaemonCustomPatterns(projectPath string, logger *log.Logger) {
+	dbPath := filepath.Join(projectPath, ".slb", "state.db")
+	dbConn, err := db.OpenWithOptions(dbPath, db.OpenOptions{
+		CreateIfNotExists: false,
+		InitSchema:        false,
+		ReadOnly:          true,
+	})
+	if err != nil {
+		// Pre-`slb init` daemons are valid; just log + continue
+		// with builtins-only. Use Debug so a stopped/never-started
+		// project doesn't pollute the daemon log on every startup.
+		logger.Debug("custom_patterns load skipped (no project DB)",
+			"path", dbPath, "error", err)
+		return
+	}
+	defer dbConn.Close()
+
+	rows, err := dbConn.ListCustomPatterns()
+	if err != nil {
+		logger.Warn("custom_patterns query failed", "error", err)
+		return
+	}
+
+	engine := core.GetDefaultEngine()
+	existing := make(map[string]struct{})
+	for tierName, list := range engine.AllPatterns() {
+		for _, p := range list {
+			existing[tierName+"\x00"+p.Pattern] = struct{}{}
+		}
+	}
+
+	loaded := 0
+	skipped := 0
+	for _, row := range rows {
+		tier := parseDaemonTier(row.Tier)
+		if tier == "" {
+			logger.Warn("skipping persisted pattern with unrecognized tier",
+				"tier", row.Tier, "pattern", row.Pattern)
+			skipped++
+			continue
+		}
+		key := string(tier) + "\x00" + row.Pattern
+		if _, dup := existing[key]; dup {
+			continue
+		}
+		if err := engine.AddPattern(tier, row.Pattern, row.Description, row.Source); err != nil {
+			logger.Warn("skipping invalid persisted pattern",
+				"pattern", row.Pattern, "tier", row.Tier, "error", err)
+			skipped++
+			continue
+		}
+		existing[key] = struct{}{}
+		loaded++
+	}
+	if loaded > 0 || skipped > 0 {
+		logger.Info("custom_patterns merged into engine",
+			"loaded", loaded, "skipped", skipped)
+	}
+}
+
+// parseDaemonTier mirrors internal/cli/patterns.go::parseTier so
+// the daemon doesn't need to import the cli package (which would
+// be a layering inversion). Lowercase, returns empty for unknown.
+func parseDaemonTier(s string) core.RiskTier {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "critical":
+		return core.RiskTierCritical
+	case "dangerous":
+		return core.RiskTierDangerous
+	case "caution":
+		return core.RiskTierCaution
+	case "safe":
+		return core.RiskTier(core.RiskSafe)
+	default:
+		return ""
+	}
 }

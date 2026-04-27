@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/slb/internal/core"
+	"github.com/Dicklesworthstone/slb/internal/db"
 	"github.com/charmbracelet/log"
 )
 
@@ -421,3 +423,58 @@ func TestStartDaemonWithOptions_AlreadyRunning(t *testing.T) {
 		t.Error("expected error when daemon already running")
 	}
 }
+
+// Regression for the daemon-side gap caught while reviewing #2:
+// loadDaemonCustomPatterns must merge persisted custom_patterns
+// rows into the shared engine before the daemon starts serving
+// classify queries. Without this, the daemon-vs-fallback paths
+// would diverge: the daemon would only see builtins while the
+// generated `slb_guard.py` (post-fix) sees customs.
+func TestLoadDaemonCustomPatterns_MergesRowsIntoEngine(t *testing.T) {
+	// Set up a project structure: /<tmp>/.slb/state.db with a
+	// custom_patterns table populated with one unique row.
+	projectPath := t.TempDir()
+	slbDir := filepath.Join(projectPath, ".slb")
+	if err := os.MkdirAll(slbDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll .slb: %v", err)
+	}
+	dbPath := filepath.Join(slbDir, "state.db")
+	dbConn, err := db.OpenAndMigrate(dbPath)
+	if err != nil {
+		t.Fatalf("OpenAndMigrate: %v", err)
+	}
+	uniqPattern := `^uniq-daemon-load-test-marker-z3y7$`
+	if _, err := dbConn.InsertCustomPattern("dangerous", uniqPattern, "regression test", "test"); err != nil {
+		dbConn.Close()
+		t.Fatalf("InsertCustomPattern: %v", err)
+	}
+	dbConn.Close()
+
+	// Capture warning logs to /dev/null so they don't pollute -v output.
+	logger := log.NewWithOptions(io.Discard, log.Options{Level: log.WarnLevel})
+	loadDaemonCustomPatterns(projectPath, logger)
+
+	// The engine must now contain the unique pattern in the
+	// dangerous tier. Iterate via the public AllPatterns view.
+	engine := core.GetDefaultEngine()
+	found := false
+	for _, p := range engine.AllPatterns()["dangerous"] {
+		if p.Pattern == uniqPattern {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("loadDaemonCustomPatterns did not merge persisted pattern %q into engine", uniqPattern)
+	}
+
+	// Idempotency: a second call must NOT duplicate the in-memory
+	// engine entry, mirroring the CLI loader's contract.
+	before := len(engine.AllPatterns()["dangerous"])
+	loadDaemonCustomPatterns(projectPath, logger)
+	after := len(engine.AllPatterns()["dangerous"])
+	if before != after {
+		t.Errorf("loadDaemonCustomPatterns is not idempotent: dangerous-tier count %d -> %d", before, after)
+	}
+}
+
