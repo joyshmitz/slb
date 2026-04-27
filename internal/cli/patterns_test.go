@@ -859,6 +859,60 @@ func TestPatternsVersionCommand(t *testing.T) {
 	}
 }
 
+// `patterns version` must reflect persisted customs in its
+// reported sha256 + pattern_count. Without the loader call,
+// tooling that uses the hash for "do I need to regenerate the
+// hook?" decisions would never observe an `slb patterns add`.
+func TestPatternsVersionCommand_ReflectsPersistedCustomPatterns(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetPatternsFlags()
+
+	// Baseline version (builtins only).
+	baseCmd := newTestPatternsCmd(h.DBPath)
+	stdout1, err := executeCommandCapture(t, baseCmd, "patterns", "version", "-j")
+	if err != nil {
+		t.Fatalf("baseline version: %v", err)
+	}
+	var base map[string]any
+	if err := json.Unmarshal([]byte(stdout1), &base); err != nil {
+		t.Fatalf("parse baseline JSON: %v\nstdout: %s", err, stdout1)
+	}
+
+	// Persist a custom pattern.
+	resetPatternsFlags()
+	addCmd := newTestPatternsCmd(h.DBPath)
+	if _, err := executeCommandCapture(t, addCmd, "patterns", "add",
+		`^uniq-version-includes-marker-q42z$`,
+		"-T", "dangerous", "-r", "regression for patterns version inclusion", "-j",
+	); err != nil {
+		t.Fatalf("patterns add: %v", err)
+	}
+
+	// Re-run version. The pattern_count must increase by exactly 1
+	// and the sha256 must differ from the baseline.
+	resetPatternsFlags()
+	postCmd := newTestPatternsCmd(h.DBPath)
+	stdout2, err := executeCommandCapture(t, postCmd, "patterns", "version", "-j")
+	if err != nil {
+		t.Fatalf("post-add version: %v", err)
+	}
+	var post map[string]any
+	if err := json.Unmarshal([]byte(stdout2), &post); err != nil {
+		t.Fatalf("parse post-add JSON: %v\nstdout: %s", err, stdout2)
+	}
+
+	baseCount, _ := base["pattern_count"].(float64)
+	postCount, _ := post["pattern_count"].(float64)
+	if postCount != baseCount+1 {
+		t.Errorf("pattern_count did not include the persisted custom pattern: baseline=%v post-add=%v",
+			baseCount, postCount)
+	}
+	if base["sha256"] == post["sha256"] {
+		t.Errorf("sha256 should differ when a custom pattern is added; both reported %v",
+			base["sha256"])
+	}
+}
+
 func TestPatternsVersionCommand_DeterministicHash(t *testing.T) {
 	h := testutil.NewHarness(t)
 	resetPatternsFlags()

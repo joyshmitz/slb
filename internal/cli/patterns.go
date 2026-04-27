@@ -521,6 +521,14 @@ Examples:
   slb patterns version        # Show version info
   slb patterns version -j     # JSON output`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Reflect persisted customs in the reported sha256 +
+		// pattern_count. Without this, `patterns version` would
+		// always report the builtins-only hash even after a user
+		// has added customs — and that hash is what tooling uses
+		// to decide whether to regenerate the hook script.
+		if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		}
 		engine := core.GetDefaultEngine()
 		export := engine.Export()
 
