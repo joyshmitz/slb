@@ -2,11 +2,13 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/Dicklesworthstone/slb/internal/core"
+	"github.com/Dicklesworthstone/slb/internal/db"
 	"github.com/Dicklesworthstone/slb/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -18,6 +20,54 @@ var (
 	flagPatternFormat     string
 	flagPatternOutputFile string
 )
+
+// loadCustomPatternsIntoDefaultEngine merges every row in the project's
+// `custom_patterns` table into the global pattern engine. Without this,
+// `slb patterns add` persists the row to SQLite but a fresh CLI process
+// (e.g. `slb patterns test`) only ever sees the builtin patterns
+// because the engine is initialized at package load with builtins only.
+//
+// Best-effort: if the database can't be opened, returns nil so commands
+// that don't strictly need custom patterns (e.g. running before
+// `slb init`) still work against builtins. Returns the number of
+// patterns loaded.
+func loadCustomPatternsIntoDefaultEngine() (int, error) {
+	dbConn, err := db.OpenAndMigrate(GetDB())
+	if err != nil {
+		// No project DB yet: silently fall back to builtins-only.
+		// This matches the behavior of `slb classify` etc. on a
+		// freshly-installed system before `slb init`.
+		return 0, nil
+	}
+	defer dbConn.Close()
+
+	rows, err := dbConn.ListCustomPatterns()
+	if err != nil {
+		return 0, fmt.Errorf("loading custom patterns: %w", err)
+	}
+
+	engine := core.GetDefaultEngine()
+	loaded := 0
+	for _, row := range rows {
+		tier := parseTier(row.Tier)
+		// parseTier returns empty for "safe" (sentinel for "no
+		// elevated tier"), so accept either a recognized tier or
+		// the literal string "safe".
+		if tier == "" && row.Tier != "safe" {
+			continue
+		}
+		if err := engine.AddPattern(tier, row.Pattern, row.Description, row.Source); err != nil {
+			// A persisted pattern that won't compile is a real
+			// problem, but shouldn't take down the whole CLI —
+			// log and continue so other patterns still load.
+			fmt.Fprintf(os.Stderr, "warning: skipping invalid persisted pattern %q (tier=%s): %v\n",
+				row.Pattern, row.Tier, err)
+			continue
+		}
+		loaded++
+	}
+	return loaded, nil
+}
 
 func init() {
 	// patterns command
@@ -67,6 +117,9 @@ var patternsListCmd = &cobra.Command{
 Use --tier to filter by a specific tier (safe, critical, dangerous, caution).
 Without --tier, all patterns from all tiers are shown.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		}
 		engine := core.GetDefaultEngine()
 		out := output.New(output.Format(GetOutput()))
 
@@ -98,6 +151,14 @@ Use --exit-code to return non-zero (exit 1) if approval is needed.
 This is useful for Claude Code hooks integration.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Merge custom_patterns from the project DB on top of the
+		// builtin set so `patterns test` sees what `patterns add`
+		// just persisted. Best-effort — a missing DB falls back to
+		// builtins-only.
+		if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		}
+
 		command := args[0]
 		cwd, _ := os.Getwd()
 
@@ -217,9 +278,49 @@ Examples:
 			return fmt.Errorf("invalid pattern: %w", err)
 		}
 
+		// Persist the pattern to SQLite. Without this, the in-memory
+		// engine mutation above would die with the CLI process and
+		// "patterns add" would be theatrical (issue #2). Open the
+		// project DB and run migrations so a fresh `slb init` plus
+		// `slb patterns add` works end-to-end without the user
+		// having to think about schema.
+		dbConn, err := db.OpenAndMigrate(GetDB())
+		if err != nil {
+			return fmt.Errorf("opening project database to persist pattern: %w", err)
+		}
+		defer dbConn.Close()
+
+		insertedID, err := dbConn.InsertCustomPattern(
+			flagPatternTier,
+			pattern,
+			flagPatternReason,
+			"agent",
+		)
+		if err != nil {
+			if errors.Is(err, db.ErrCustomPatternExists) {
+				// Idempotent re-add: don't fail. The in-memory
+				// engine already accepted it (no-op after the first
+				// call within a process), and the persistent row
+				// is unchanged. Surface the existing id so JSON
+				// consumers can distinguish "newly created" from
+				// "already there".
+				out := output.New(output.Format(GetOutput()))
+				return out.Write(map[string]any{
+					"status":   "already_exists",
+					"id":       insertedID,
+					"pattern":  pattern,
+					"tier":     flagPatternTier,
+					"reason":   flagPatternReason,
+					"added_by": "agent",
+				})
+			}
+			return fmt.Errorf("persisting pattern to database: %w", err)
+		}
+
 		out := output.New(output.Format(GetOutput()))
 		return out.Write(map[string]any{
 			"status":   "added",
+			"id":       insertedID,
 			"pattern":  pattern,
 			"tier":     flagPatternTier,
 			"reason":   flagPatternReason,
@@ -329,6 +430,9 @@ Examples:
   slb patterns export -o patterns.json        # JSON to file
   slb patterns export -f claude-hook -o hook.py  # Python to file`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		}
 		engine := core.GetDefaultEngine()
 
 		var content string

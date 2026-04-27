@@ -327,6 +327,128 @@ func TestPatternsAddCommand_AddsPattern(t *testing.T) {
 	}
 }
 
+// Regression test for issue #2: `slb patterns add` reported
+// status=added but never persisted the pattern. Verify both that the
+// SQLite custom_patterns table is written AND that a follow-up
+// `slb patterns test` invocation (which resets the in-memory engine
+// and re-loads from DB) sees the new pattern as the matched tier.
+func TestPatternsAddCommand_PersistsToCustomPatternsTable(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetPatternsFlags()
+
+	cmd := newTestPatternsCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "patterns", "add",
+		`my\s+test\s+pattern`,
+		"-T", "dangerous",
+		"-r", "regression for issue #2",
+		"-j",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstdout: %s", err, stdout)
+	}
+
+	var addResult map[string]any
+	if err := json.Unmarshal([]byte(stdout), &addResult); err != nil {
+		t.Fatalf("failed to parse add JSON: %v\nstdout: %s", err, stdout)
+	}
+	if addResult["status"] != "added" {
+		t.Fatalf("expected status=added, got %v", addResult["status"])
+	}
+	// New invariant from the fix: the response carries the inserted
+	// row id (a positive int64), proving the SQLite INSERT actually
+	// wrote a row instead of being a silent no-op.
+	if id, ok := addResult["id"].(float64); !ok || id <= 0 {
+		t.Errorf("expected positive id from persisted insert, got %v", addResult["id"])
+	}
+
+	// Verify directly against SQLite — schema must hold a row with
+	// the exact pattern, tier, and source the CLI announced.
+	count, err := h.DB.CountCustomPatterns()
+	if err != nil {
+		t.Fatalf("CountCustomPatterns: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 custom pattern row, got %d", count)
+	}
+	rows, err := h.DB.ListCustomPatterns()
+	if err != nil {
+		t.Fatalf("ListCustomPatterns: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListCustomPatterns returned %d rows, want 1", len(rows))
+	}
+	if rows[0].Pattern != `my\s+test\s+pattern` {
+		t.Errorf("persisted pattern mismatch: got %q", rows[0].Pattern)
+	}
+	if rows[0].Tier != "dangerous" {
+		t.Errorf("persisted tier mismatch: got %q", rows[0].Tier)
+	}
+	if rows[0].Source != "agent" {
+		t.Errorf("persisted source mismatch: got %q", rows[0].Source)
+	}
+
+	// And the smoke test from the issue body: a fresh CLI process
+	// should see the persisted pattern via `patterns test`. Reset
+	// the in-memory engine state by recreating the command tree —
+	// this mirrors a separate process invocation.
+	resetPatternsFlags()
+	testCmd := newTestPatternsCmd(h.DBPath)
+	testStdout, err := executeCommandCapture(t, testCmd, "patterns", "test",
+		"my test pattern",
+		"-j",
+	)
+	if err != nil {
+		t.Fatalf("patterns test error: %v\nstdout: %s", err, testStdout)
+	}
+	var testResult map[string]any
+	if err := json.Unmarshal([]byte(testStdout), &testResult); err != nil {
+		t.Fatalf("failed to parse test JSON: %v\nstdout: %s", err, testStdout)
+	}
+	if testResult["tier"] != "dangerous" {
+		t.Errorf("expected tier=dangerous after persisted pattern reload, got %v\n  full result: %+v",
+			testResult["tier"], testResult)
+	}
+}
+
+// Re-adding the same pattern should be idempotent and report
+// status=already_exists rather than blowing up on the
+// UNIQUE(tier, pattern) constraint.
+func TestPatternsAddCommand_IdempotentOnDuplicate(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetPatternsFlags()
+
+	cmd1 := newTestPatternsCmd(h.DBPath)
+	if _, err := executeCommandCapture(t, cmd1, "patterns", "add",
+		`^foo$`, "-T", "dangerous", "-r", "first", "-j",
+	); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+
+	resetPatternsFlags()
+	cmd2 := newTestPatternsCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd2, "patterns", "add",
+		`^foo$`, "-T", "dangerous", "-r", "duplicate", "-j",
+	)
+	if err != nil {
+		t.Fatalf("duplicate add returned error instead of already_exists: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\nstdout: %s", err, stdout)
+	}
+	if result["status"] != "already_exists" {
+		t.Errorf("expected status=already_exists on duplicate, got %v", result["status"])
+	}
+
+	count, err := h.DB.CountCustomPatterns()
+	if err != nil {
+		t.Fatalf("CountCustomPatterns: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("duplicate add wrote a second row (count=%d)", count)
+	}
+}
+
 func TestPatternsRemoveCommand_IsBlocked(t *testing.T) {
 	h := testutil.NewHarness(t)
 	resetPatternsFlags()
