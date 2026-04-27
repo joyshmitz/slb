@@ -722,3 +722,98 @@ func TestGenerateHookScript_ContainsEssentialComponents(t *testing.T) {
 		}
 	}
 }
+
+// Regression tests for issues #4 and #5 — the generated hook
+// script must (a) preserve regex metacharacters in raw strings,
+// (b) use re.search not re.match, (c) emit the Claude Code 2026.04
+// JSON shape, and (d) defensively map unknown verdicts to "ask"
+// rather than "allow".
+func TestHookGenerateCommand_GeneratedScriptShapeIsCorrect(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetHookFlags()
+
+	tmpDir := t.TempDir()
+	cmd := newTestHookCmd(h.DBPath)
+	if _, err := executeCommandCapture(t, cmd, "hook", "generate", "-o", tmpDir, "-j"); err != nil {
+		t.Fatalf("hook generate: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(tmpDir, "slb_guard.py"))
+	if err != nil {
+		t.Fatalf("read generated script: %v", err)
+	}
+	script := string(body)
+
+	// (a) #4: raw-string preservation. The first dangerous builtin
+	// is `^rm\s+-[rf]{2}` — it MUST appear as `r'^rm\s+-[rf]{2}'`,
+	// NOT `r'^rm\\s+-[rf]{2}'` (which would treat the `\s` as
+	// literal `\s` characters in the Python re engine).
+	if strings.Contains(script, `r'^rm\\s+-[rf]{2}'`) {
+		t.Errorf("regression #4: generated script double-escapes \\s inside raw-string literals; " +
+			"this kills every regex metacharacter in the embedded fallback classifier")
+	}
+	if !strings.Contains(script, `r'^rm\s+-[rf]{2}'`) {
+		t.Errorf("expected raw-string `r'^rm\\s+-[rf]{2}'` in generated script; not found")
+	}
+
+	// (b) #4 follow-on: classify() must use p.search, not p.match.
+	// Anchored matching loses every mid-command hit.
+	if strings.Contains(script, "if p.match(command):") {
+		t.Errorf("regression #4 follow-on: classify() uses anchored p.match; should use unanchored p.search")
+	}
+	if !strings.Contains(script, "if p.search(command):") {
+		t.Errorf("expected p.search in classify(); not found")
+	}
+
+	// (c) #5: hookSpecificOutput shape is the only one Claude Code
+	// 2026.04 honors.
+	if !strings.Contains(script, `"hookSpecificOutput"`) {
+		t.Errorf("regression #5: generated script does not emit hookSpecificOutput shape")
+	}
+	if !strings.Contains(script, `"permissionDecision"`) {
+		t.Errorf("regression #5: generated script does not emit permissionDecision field")
+	}
+	// And the legacy shape MUST NOT be emitted.
+	if strings.Contains(script, `"action": "block"`) {
+		t.Errorf("regression #5: generated script still emits legacy {action: block} shape")
+	}
+
+	// (d) defense in depth: _emit_decision must exist and route
+	// unknown actions to ask, not allow. We can't run the Python
+	// inline, but we can pin the source-level shape.
+	if !strings.Contains(script, "def _emit_decision(") {
+		t.Errorf("expected _emit_decision helper in generated script")
+	}
+	// The defensive default for unknown actions sets permission
+	// to "ask"; the previous broken implementation defaulted
+	// to "allow" (fail-open).
+	if !strings.Contains(script, `permission = "ask"`) {
+		t.Errorf("expected fail-closed default `permission = \"ask\"` for unknown actions; not found")
+	}
+}
+
+// The generated script must walk up from CWD looking for .slb/
+// when computing the daemon socket path (#3). Anchored hashing of
+// the immediate CWD diverges from the daemon's hash whenever the
+// hook fires from a sub-directory of the project.
+func TestHookGenerateCommand_SocketPathWalksUpToProjectRoot(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetHookFlags()
+
+	tmpDir := t.TempDir()
+	cmd := newTestHookCmd(h.DBPath)
+	if _, err := executeCommandCapture(t, cmd, "hook", "generate", "-o", tmpDir, "-j"); err != nil {
+		t.Fatalf("hook generate: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(tmpDir, "slb_guard.py"))
+	if err != nil {
+		t.Fatalf("read generated script: %v", err)
+	}
+	script := string(body)
+
+	if !strings.Contains(script, "_project_root_for_socket(") {
+		t.Errorf("regression #3: generated script does not include _project_root_for_socket helper")
+	}
+	if !strings.Contains(script, `os.path.isdir(candidate)`) {
+		t.Errorf("regression #3: _project_root_for_socket is not walking up looking for .slb/")
+	}
+}

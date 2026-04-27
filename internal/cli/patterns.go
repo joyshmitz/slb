@@ -73,7 +73,12 @@ func loadCustomPatternsIntoDefaultEngine() (int, error) {
 				row.Tier, row.Pattern)
 			continue
 		}
-		if _, dup := existing[row.Tier+"\x00"+row.Pattern]; dup {
+		// Use the canonical lowercase tier name (from parseTier) as
+		// the dedup key. If a row was inserted with mixed-case tier
+		// (e.g. via direct SQL edits), it would still match the
+		// engine's lowercase keys.
+		key := string(tier) + "\x00" + row.Pattern
+		if _, dup := existing[key]; dup {
 			continue
 		}
 		if err := engine.AddPattern(tier, row.Pattern, row.Description, row.Source); err != nil {
@@ -84,6 +89,10 @@ func loadCustomPatternsIntoDefaultEngine() (int, error) {
 				row.Pattern, row.Tier, err)
 			continue
 		}
+		// Mark loaded so that two duplicate rows in the same DB
+		// table (e.g. inserted before the UNIQUE constraint was
+		// added) don't both populate the engine.
+		existing[key] = struct{}{}
 		loaded++
 	}
 	return loaded, nil
