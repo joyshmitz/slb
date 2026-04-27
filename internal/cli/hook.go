@@ -496,10 +496,35 @@ import tempfile
 
 SLB_TIMEOUT = 0.05  # 50ms timeout
 
+def _project_root_for_socket(start: str) -> str:
+    """Walk up from start looking for a .slb/ directory and return
+    its parent. Falls back to start if no .slb/ ancestor exists.
+
+    Mirrors the Go-side projectRootForSocket helper so the hook and
+    daemon converge on the same socket name even when fired from
+    different sub-directories of the same project (issue #3).
+    """
+    try:
+        path = os.path.abspath(start)
+    except Exception:
+        return start
+    while True:
+        candidate = os.path.join(path, ".slb")
+        if os.path.isdir(candidate):
+            return path
+        parent = os.path.dirname(path)
+        if parent == path:
+            # Hit filesystem root without finding .slb/ — fall back
+            # to the original CWD to preserve v0.3.x behavior on
+            # installations that have not run "slb init".
+            return os.path.abspath(start)
+        path = parent
+
 def get_socket_path() -> str:
-    """Get the SLB daemon socket path for the current directory."""
+    """Get the SLB daemon socket path for the current project."""
     cwd = os.getcwd()
-    hash_digest = hashlib.sha256(cwd.encode()).hexdigest()[:12]
+    hash_base = _project_root_for_socket(cwd)
+    hash_digest = hashlib.sha256(hash_base.encode()).hexdigest()[:12]
     return os.path.join(tempfile.gettempdir(), f"slb-{hash_digest}.sock")
 
 def query_slb_daemon(command: str, session_id: str, cwd: str) -> Optional[dict]:

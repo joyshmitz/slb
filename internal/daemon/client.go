@@ -93,14 +93,51 @@ func NewClient(opts ...ClientOption) *Client {
 
 // DefaultSocketPath returns the default Unix socket path for the current project.
 // Format: /tmp/slb-{project-hash}.sock
+//
+// The project hash is derived from the path of the nearest ancestor
+// directory containing a .slb/ directory (walked up from CWD), not
+// from CWD itself. This ensures the daemon and any hook invoked from
+// a sub-directory of the same project converge on the same socket
+// (issue #3) — without it, a daemon started in /path/A and a hook
+// fired from /path/A/sub silently miss each other.
+//
+// Falls back to the raw CWD if no .slb/ ancestor exists, which
+// preserves the v0.3.x behavior for setups that don't use `slb init`.
 func DefaultSocketPath() string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
 	}
-	hash := sha256.Sum256([]byte(cwd))
+	hashBase := projectRootForSocket(cwd)
+	hash := sha256.Sum256([]byte(hashBase))
 	shortHash := hex.EncodeToString(hash[:])[:12]
 	return filepath.Join(os.TempDir(), fmt.Sprintf("slb-%s.sock", shortHash))
+}
+
+// projectRootForSocket walks up from `start` looking for a `.slb/`
+// directory and returns the absolute path of the directory containing
+// it. Returns the input directory unchanged if no .slb/ ancestor is
+// found, so installations without an `slb init` still behave the
+// pre-existing way.
+func projectRootForSocket(start string) string {
+	abs, err := filepath.Abs(start)
+	if err != nil {
+		return start
+	}
+	dir := abs
+	for {
+		if info, err := os.Stat(filepath.Join(dir, ".slb")); err == nil && info.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Hit the filesystem root without finding .slb — fall
+			// back to the original CWD so behavior matches pre-fix
+			// installations.
+			return abs
+		}
+		dir = parent
+	}
 }
 
 // DefaultPIDFile returns the default PID file path.

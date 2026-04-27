@@ -1367,3 +1367,77 @@ func TestGetFeatureAvailability_DaemonRunning(t *testing.T) {
 
 	_ = srv.Stop()
 }
+
+// Regression test for issue #3: a daemon started in /path/A and a
+// hook fired from /path/A/sub must converge on the same socket
+// path. Walk-up-to-.slb means the hash key is the project root,
+// not the immediate CWD.
+func TestDefaultSocketPath_WalksUpToProjectRoot(t *testing.T) {
+	projA := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projA, ".slb"), 0o755); err != nil {
+		t.Fatalf("MkdirAll .slb in projA: %v", err)
+	}
+	projB := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projB, ".slb"), 0o755); err != nil {
+		t.Fatalf("MkdirAll .slb in projB: %v", err)
+	}
+	subA := filepath.Join(projA, "src", "deeply", "nested")
+	if err := os.MkdirAll(subA, 0o755); err != nil {
+		t.Fatalf("MkdirAll subA: %v", err)
+	}
+
+	origCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origCWD) })
+
+	if err := os.Chdir(projA); err != nil {
+		t.Fatalf("Chdir projA: %v", err)
+	}
+	sockA := DefaultSocketPath()
+
+	if err := os.Chdir(subA); err != nil {
+		t.Fatalf("Chdir subA: %v", err)
+	}
+	sockASub := DefaultSocketPath()
+
+	if err := os.Chdir(projB); err != nil {
+		t.Fatalf("Chdir projB: %v", err)
+	}
+	sockB := DefaultSocketPath()
+
+	if sockA != sockASub {
+		t.Errorf("daemon root and hook-from-subdir should converge on the same socket;\n  root: %s\n  subdir: %s", sockA, sockASub)
+	}
+	if sockA == sockB {
+		t.Errorf("different projects should produce different sockets, both got %s", sockA)
+	}
+}
+
+// When no .slb/ exists anywhere in the ancestor chain, fall back to
+// raw-CWD hashing so v0.3.x setups (no slb init) still get consistent
+// socket names within a single CWD.
+func TestDefaultSocketPath_NoProjectRootFallsBackToCWD(t *testing.T) {
+	// A subtree that explicitly contains no .slb/ — t.TempDir
+	// gives us an empty fresh directory.
+	noProj := t.TempDir()
+
+	origCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origCWD) })
+
+	if err := os.Chdir(noProj); err != nil {
+		t.Fatalf("Chdir noProj: %v", err)
+	}
+	sock1 := DefaultSocketPath()
+	sock2 := DefaultSocketPath()
+	if sock1 != sock2 {
+		t.Errorf("fallback path should be deterministic for the same CWD: %s vs %s", sock1, sock2)
+	}
+	if !strings.HasPrefix(filepath.Base(sock1), "slb-") {
+		t.Errorf("unexpected socket name: %s", sock1)
+	}
+}
