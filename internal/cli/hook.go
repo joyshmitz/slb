@@ -557,26 +557,46 @@ def query_slb_daemon(command: str, session_id: str, cwd: str) -> Optional[dict]:
     except (socket.error, json.JSONDecodeError, TimeoutError, OSError):
         return None
 
-# Map SLB's internal verdict ('allow' | 'block' | 'ask') to the
-# JSON shape Claude Code 2026.04 recognizes for PreToolUse hooks.
-# The legacy {'action': 'block', 'message': ...} shape is silently
-# ignored by current Claude Code, so the hook fires but the rail
-# never intercepts (issue #5). The hookSpecificOutput shape also
-# supports 'ask', which the older {'decision': ...} shape doesn't.
-def _emit_decision(action: str, message: str = "") -> None:
-    if action == 'block':
-        permission = 'deny'
-    elif action == 'ask':
-        permission = 'ask'
+# Map SLB's internal verdict to the JSON shape Claude Code 2026.04
+# recognizes for PreToolUse hooks. The legacy {'action': 'block',
+# 'message': ...} shape is silently ignored by current Claude Code,
+# so the hook fires but the rail never intercepts (issue #5). The
+# hookSpecificOutput shape also supports 'ask', which the older
+# {'decision': ...} shape doesn't.
+#
+# Action vocabulary accepted (case-insensitive):
+#   allow                            -> permissionDecision: allow
+#   block | deny                     -> permissionDecision: deny
+#   ask                              -> permissionDecision: ask
+#   anything else (unknown/missing)  -> permissionDecision: ask
+#
+# Unknown actions fall through to 'ask' rather than 'allow' so a
+# future daemon version that introduces a new verdict doesn't fail
+# open silently. The user can always confirm; allowing-by-default
+# is the wrong direction for a safety rail.
+def _emit_decision(action, message: str = "") -> None:
+    action_lower = (action or "").strip().lower()
+    if action_lower == "allow":
+        permission = "allow"
+    elif action_lower in ("block", "deny"):
+        permission = "deny"
+    elif action_lower == "ask":
+        permission = "ask"
     else:
-        permission = 'allow'
+        permission = "ask"
+        if not message:
+            message = (
+                "SLB: unrecognized verdict "
+                + repr(action)
+                + " from classifier; asking for confirmation."
+            )
     payload = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": permission,
         }
     }
-    if message and permission != 'allow':
+    if message and permission != "allow":
         payload["hookSpecificOutput"]["permissionDecisionReason"] = message
     print(json.dumps(payload))
 

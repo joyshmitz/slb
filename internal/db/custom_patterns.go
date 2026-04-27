@@ -27,11 +27,12 @@ type CustomPattern struct {
 var ErrCustomPatternExists = errors.New("custom pattern already exists for this tier")
 
 // InsertCustomPattern persists a custom pattern. Returns the inserted
-// row's ID and the row count actually affected (so callers can
-// distinguish "row written" from "no-op INSERT swallowed by SQLite").
+// row's ID on success.
 //
 // On UNIQUE(tier, pattern) collision, returns ErrCustomPatternExists
-// without writing.
+// (with the existing row's ID) without writing. SQLite's RowsAffected
+// is checked internally; a zero-row INSERT is reported as an error so
+// the silent-no-op shape from issue #2 cannot recur.
 func (db *DB) InsertCustomPattern(tier, pattern, description, source string) (int64, error) {
 	if tier == "" {
 		return 0, fmt.Errorf("tier is required")

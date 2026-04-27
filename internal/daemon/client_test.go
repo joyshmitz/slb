@@ -1418,26 +1418,61 @@ func TestDefaultSocketPath_WalksUpToProjectRoot(t *testing.T) {
 // When no .slb/ exists anywhere in the ancestor chain, fall back to
 // raw-CWD hashing so v0.3.x setups (no slb init) still get consistent
 // socket names within a single CWD.
-func TestDefaultSocketPath_NoProjectRootFallsBackToCWD(t *testing.T) {
-	// A subtree that explicitly contains no .slb/ — t.TempDir
-	// gives us an empty fresh directory.
-	noProj := t.TempDir()
+//
+// Tests projectRootForSocket directly (instead of going through
+// DefaultSocketPath + chdir) because t.TempDir's ancestor chain
+// reaches /tmp, which on a developer machine could plausibly
+// contain a `.slb/` from a prior test or experiment — that would
+// hide the fallback path under the success path. Calling the
+// helper directly with a synthesized leaf isolates the test.
+func TestProjectRootForSocket_FallbackWhenNoAncestorMatches(t *testing.T) {
+	tempRoot := t.TempDir()
+	leaf := filepath.Join(tempRoot, "fresh", "no-slb-anywhere", "leaf")
 
-	origCWD, err := os.Getwd()
+	// Defensive precondition: walk up from the leaf and confirm no
+	// `.slb/` exists in any ancestor. If one does, the test's
+	// assumptions are invalid on this host (a stray `.slb/` in
+	// /tmp from a previous run, etc.) — skip rather than
+	// false-pass.
+	for dir := leaf; ; dir = filepath.Dir(dir) {
+		if info, err := os.Stat(filepath.Join(dir, ".slb")); err == nil && info.IsDir() {
+			t.Skipf("ancestor %s contains a stray .slb/ directory; cannot exercise fallback path here", dir)
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+
+	got := projectRootForSocket(leaf)
+	wantAbs, err := filepath.Abs(leaf)
 	if err != nil {
-		t.Fatalf("Getwd: %v", err)
+		t.Fatalf("filepath.Abs(%q): %v", leaf, err)
 	}
-	t.Cleanup(func() { _ = os.Chdir(origCWD) })
+	if got != wantAbs {
+		t.Errorf("expected fallback to return abs(leaf) %q; got %q", wantAbs, got)
+	}
 
-	if err := os.Chdir(noProj); err != nil {
-		t.Fatalf("Chdir noProj: %v", err)
+	// Determinism: invoking it twice must produce the same value.
+	if got2 := projectRootForSocket(leaf); got != got2 {
+		t.Errorf("projectRootForSocket should be deterministic: %q vs %q", got, got2)
 	}
-	sock1 := DefaultSocketPath()
-	sock2 := DefaultSocketPath()
-	if sock1 != sock2 {
-		t.Errorf("fallback path should be deterministic for the same CWD: %s vs %s", sock1, sock2)
+}
+
+// Sanity smoke against the public DefaultSocketPath: format hasn't
+// drifted. `slb-<12hex>.sock` under the system tempdir.
+func TestDefaultSocketPath_FormatStable(t *testing.T) {
+	sock := DefaultSocketPath()
+	base := filepath.Base(sock)
+	if !strings.HasPrefix(base, "slb-") || !strings.HasSuffix(base, ".sock") {
+		t.Errorf("unexpected socket basename %q", base)
 	}
-	if !strings.HasPrefix(filepath.Base(sock1), "slb-") {
-		t.Errorf("unexpected socket name: %s", sock1)
+	// "slb-" + 12 hex + ".sock" = 4 + 12 + 5 = 21
+	if len(base) != 21 {
+		t.Errorf("unexpected socket basename length: got %d (%q), want 21", len(base), base)
+	}
+	if got, want := filepath.Dir(sock), os.TempDir(); got != want {
+		t.Errorf("socket parent %q != os.TempDir() %q", got, want)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/slb/internal/core"
 	"github.com/Dicklesworthstone/slb/internal/testutil"
 	"github.com/spf13/cobra"
 )
@@ -446,6 +447,68 @@ func TestPatternsAddCommand_IdempotentOnDuplicate(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("duplicate add wrote a second row (count=%d)", count)
+	}
+}
+
+// loadCustomPatternsIntoDefaultEngine must be idempotent: calling
+// it twice in the same process must not double-count persisted
+// patterns in the in-memory engine. Without dedup, a long-running
+// process or a test that creates multiple cobra command trees
+// would accumulate duplicate engine entries, drifting away from
+// the SQLite source of truth.
+func TestLoadCustomPatternsIntoDefaultEngine_Idempotent(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetPatternsFlags()
+
+	cmd := newTestPatternsCmd(h.DBPath)
+	if _, err := executeCommandCapture(t, cmd, "patterns", "add",
+		`^uniq-load-idempotent-pattern$`,
+		"-T", "dangerous", "-r", "loader idempotency", "-j",
+	); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	countMatching := func() int {
+		engine := core.GetDefaultEngine()
+		n := 0
+		for _, p := range engine.ListPatterns(core.RiskTierDangerous) {
+			if p.Pattern == `^uniq-load-idempotent-pattern$` {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Snapshot whatever the engine has after the explicit add (it
+	// already includes one in-memory copy from the patternsAddCmd
+	// engine.AddPattern call). The loader must not increase this.
+	before := countMatching()
+	if before == 0 {
+		t.Fatalf("precondition: explicit add did not register the pattern in the engine")
+	}
+
+	// Force flagDB to point at the harness DB so loader picks the
+	// right path (matches what newTestPatternsCmd does for cobra).
+	prevDB := flagDB
+	flagDB = h.DBPath
+	t.Cleanup(func() { flagDB = prevDB })
+
+	// First load: may add nothing if the explicit add already
+	// populated the engine (current behavior); main thing is no
+	// duplication.
+	if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+		t.Fatalf("first loader call: %v", err)
+	}
+	if got := countMatching(); got != before {
+		t.Errorf("first loader call duplicated: count went from %d to %d", before, got)
+	}
+
+	// Second load: must remain idempotent.
+	if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+		t.Fatalf("second loader call: %v", err)
+	}
+	if got := countMatching(); got != before {
+		t.Errorf("second loader call duplicated: count went from %d to %d", before, got)
 	}
 }
 

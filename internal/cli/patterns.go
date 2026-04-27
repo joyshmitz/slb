@@ -47,13 +47,33 @@ func loadCustomPatternsIntoDefaultEngine() (int, error) {
 	}
 
 	engine := core.GetDefaultEngine()
+	// Snapshot existing engine patterns by (tier, pattern) so this
+	// helper is idempotent across calls in the same process. Without
+	// dedup, calling loadCustomPatternsIntoDefaultEngine twice (e.g.
+	// in a test that creates two cobra command trees, or any future
+	// long-running mode) would append the same row twice and the
+	// in-memory engine would diverge from the SQLite source of truth.
+	existing := make(map[string]struct{})
+	for tierName, list := range engine.AllPatterns() {
+		for _, p := range list {
+			existing[tierName+"\x00"+p.Pattern] = struct{}{}
+		}
+	}
+
 	loaded := 0
 	for _, row := range rows {
 		tier := parseTier(row.Tier)
-		// parseTier returns empty for "safe" (sentinel for "no
-		// elevated tier"), so accept either a recognized tier or
-		// the literal string "safe".
-		if tier == "" && row.Tier != "safe" {
+		if tier == "" {
+			// Unknown tier — persisted by an older CLI version or
+			// edited directly in SQL. Skipping is safer than
+			// blindly routing it to the safe bucket (which is
+			// what engine.AddPattern's default arm would do).
+			fmt.Fprintf(os.Stderr,
+				"warning: skipping persisted pattern with unrecognized tier %q (pattern=%q)\n",
+				row.Tier, row.Pattern)
+			continue
+		}
+		if _, dup := existing[row.Tier+"\x00"+row.Pattern]; dup {
 			continue
 		}
 		if err := engine.AddPattern(tier, row.Pattern, row.Description, row.Source); err != nil {
