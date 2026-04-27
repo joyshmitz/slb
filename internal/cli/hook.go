@@ -136,6 +136,16 @@ func runHookGenerate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create directory %s: %w", outputDir, err)
 	}
 
+	// Merge persisted custom_patterns into the engine before
+	// emitting the script. Without this, `slb patterns add` would
+	// persist custom rules that never make it into the generated
+	// `slb_guard.py` — the embedded fallback would only enforce
+	// the 52 builtins. Best-effort: missing DB falls back to
+	// builtins-only (matches `slb patterns test` behavior).
+	if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
+
 	// Generate hook script
 	engine := core.GetDefaultEngine()
 	hookScript := generateHookScript(engine)
@@ -165,6 +175,13 @@ func runHookInstall(cmd *cobra.Command, args []string) error {
 	outputDir := filepath.Join(home, ".slb", "hooks")
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", outputDir, err)
+	}
+
+	// Same custom-pattern merge as runHookGenerate — install must
+	// embed the same set of patterns the user has persisted, not
+	// just the builtins.
+	if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 	}
 
 	engine := core.GetDefaultEngine()
@@ -374,6 +391,13 @@ func runHookStatus(cmd *cobra.Command, args []string) error {
 	hookScriptPath := filepath.Join(home, ".slb", "hooks", "slb_guard.py")
 	settingsPath := filepath.Join(home, ".claude", "settings.json")
 
+	// Reflect persisted customs in the current_pattern_hash — the
+	// hash must compare apples-to-apples against what the next
+	// `slb hook generate` would produce, which now includes them.
+	if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
+
 	status := map[string]any{
 		"hook_script_exists":   false,
 		"hook_script_path":     hookScriptPath,
@@ -437,6 +461,14 @@ func runHookStatus(cmd *cobra.Command, args []string) error {
 
 func runHookTest(cmd *cobra.Command, args []string) error {
 	command := args[0] // Args: ExactArgs(1) ensures this exists
+
+	// Reflect persisted custom_patterns in the test result. Without
+	// this, `slb hook test` would diverge from what the actual
+	// installed hook would do (which sees customs after the fix in
+	// runHookGenerate / runHookInstall).
+	if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
 
 	result := core.Classify(command, "")
 

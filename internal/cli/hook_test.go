@@ -817,3 +817,47 @@ func TestHookGenerateCommand_SocketPathWalksUpToProjectRoot(t *testing.T) {
 		t.Errorf("regression #3: _project_root_for_socket is not walking up looking for .slb/")
 	}
 }
+
+// Regression for the integration gap caught while reviewing #2/#5:
+// `slb hook generate` must merge persisted custom_patterns into
+// the engine before emitting the script. Without the loader call,
+// the embedded fallback would only ever enforce the 52 builtins,
+// even after a user runs `slb patterns add`.
+func TestHookGenerateCommand_IncludesPersistedCustomPatterns(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetHookFlags()
+
+	// Persist a custom pattern via the patterns add command.
+	resetPatternsFlags()
+	addCmd := newTestPatternsCmd(h.DBPath)
+	uniqPattern := `^uniq-hook-gen-include-marker-pattern-x9q$`
+	if _, err := executeCommandCapture(t, addCmd, "patterns", "add",
+		uniqPattern,
+		"-T", "dangerous", "-r", "regression for hook-generate inclusion", "-j",
+	); err != nil {
+		t.Fatalf("patterns add: %v", err)
+	}
+
+	// Now generate the hook. The generated script must contain
+	// the custom pattern alongside the builtins.
+	resetHookFlags()
+	tmpDir := t.TempDir()
+	hookCmd := newTestHookCmd(h.DBPath)
+	if _, err := executeCommandCapture(t, hookCmd, "hook", "generate",
+		"-o", tmpDir, "-j",
+	); err != nil {
+		t.Fatalf("hook generate: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(tmpDir, "slb_guard.py"))
+	if err != nil {
+		t.Fatalf("read generated script: %v", err)
+	}
+
+	if !strings.Contains(string(body), uniqPattern) {
+		t.Errorf("hook generate did not include the persisted custom pattern in the embedded script.\n"+
+			"  expected to find: %s\n"+
+			"  This means `slb patterns add` is silent about the hook fallback path:\n"+
+			"  the daemon sees the pattern (after a daemon-side fix) but the offline\n"+
+			"  fallback never does.", uniqPattern)
+	}
+}
