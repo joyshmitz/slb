@@ -2,6 +2,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -969,4 +970,90 @@ func TestClassifyCommand_SQLDetection(t *testing.T) {
 			t.Errorf("SELECT should not be dangerous/critical, got %q", result.Tier)
 		}
 	})
+}
+
+// Regression test for issue #4: ExportClaudeHook was double-escaping
+// backslashes inside Python raw-string literals, so every regex
+// metacharacter (\s, \b, \w, \., ...) became a literal sequence and
+// the embedded fallback classifier matched nothing.
+func TestExportClaudeHook_PreservesRegexMetacharacters(t *testing.T) {
+	engine := NewPatternEngine()
+	out := engine.ExportClaudeHook()
+
+	// The very first dangerous builtin is `^rm\s+-[rf]{2}` — its
+	// `\s` MUST survive into the emitted Python source as a real
+	// regex whitespace match, not as the literal three-char
+	// sequence `\\s`.
+	if strings.Contains(out, `r'^rm\\s+-[rf]{2}'`) {
+		t.Fatalf("ExportClaudeHook double-escaped backslashes inside a raw-string literal; "+
+			"`r'^rm\\\\s+...'` would match the literal characters `\\\\s`, not whitespace.\n"+
+			"This is the issue #4 regression. Excerpt:\n%s",
+			extractFirstNLines(out, 60))
+	}
+	// Conversely, verify the correct shape DOES appear.
+	if !strings.Contains(out, `r'^rm\s+-[rf]{2}'`) {
+		t.Fatalf("expected exported pattern `r'^rm\\s+-[rf]{2}'` in claude-hook output; not found.\n"+
+			"Excerpt:\n%s", extractFirstNLines(out, 60))
+	}
+	// And the case-insensitivity flag must remain — the prior
+	// implementation already had it; this is a guard against
+	// regressions in the format string.
+	if !strings.Contains(out, "re.IGNORECASE") {
+		t.Errorf("re.IGNORECASE flag missing from ExportClaudeHook output")
+	}
+}
+
+// Patterns containing a literal apostrophe must still serialize
+// safely. The fix uses non-raw single-quoted strings with backslash +
+// quote escaping for that branch; assert it produces a valid Python
+// string instead of corrupting the output. (None of the 52 builtins
+// hit this path, so we exercise it with a synthetic custom pattern.)
+func TestExportClaudeHook_HandlesApostrophePatterns(t *testing.T) {
+	engine := NewPatternEngine()
+	if err := engine.AddPattern(RiskTierDangerous, `^echo\s+'unsafe'`, "test", "test"); err != nil {
+		t.Fatalf("AddPattern: %v", err)
+	}
+	out := engine.ExportClaudeHook()
+
+	// Should NOT use a raw-string for the apostrophe pattern (raw
+	// single-quoted strings cannot contain apostrophes in Python).
+	if strings.Contains(out, `r'^echo\s+'unsafe'`) {
+		t.Fatalf("apostrophe pattern emitted as raw single-quoted string — would be a Python syntax error.\nExcerpt:\n%s",
+			extractFirstNLines(out, 80))
+	}
+	// SHOULD emit the non-raw escaped form — both the apostrophes
+	// and the backslash before \s are escaped.
+	expected := `re.compile('^echo\\s+\'unsafe\'', re.IGNORECASE)`
+	if !strings.Contains(out, expected) {
+		t.Fatalf("expected escaped form %q in claude-hook output; not found.\nExcerpt:\n%s",
+			expected, extractFirstNLines(out, 80))
+	}
+}
+
+func extractFirstNLines(s string, n int) string {
+	lines := strings.SplitN(s, "\n", n+1)
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// Regression test for issue #4 (regex matching in the embedded
+// Python classifier). The exported hook used p.match() which is
+// anchored to position 0; patterns like DROP\s+DATABASE that match
+// mid-command would never fire. Verify the generated Python source
+// uses .search() instead.
+func TestExportClaudeHook_UsesSearchNotMatch(t *testing.T) {
+	engine := NewPatternEngine()
+	out := engine.ExportClaudeHook()
+
+	// .search is the unanchored matcher; .match is anchored to
+	// position 0. The hook should use .search.
+	if strings.Contains(out, "if p.match(command):") {
+		t.Errorf("ExportClaudeHook still uses p.match(); should use p.search() (issue #4 follow-on).\n"+
+			"Anchored matching loses mid-command hits like `DROP DATABASE` inside `psql -c '...'`.")
+	}
+	if !strings.Contains(out, "if p.search(command):") {
+		t.Errorf("ExportClaudeHook does not use p.search(); generated classify() may be broken.")
+	}
 }

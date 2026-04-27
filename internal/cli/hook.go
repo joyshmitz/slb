@@ -532,13 +532,36 @@ def query_slb_daemon(command: str, session_id: str, cwd: str) -> Optional[dict]:
     except (socket.error, json.JSONDecodeError, TimeoutError, OSError):
         return None
 
+# Map SLB's internal verdict ('allow' | 'block' | 'ask') to the
+# JSON shape Claude Code 2026.04 recognizes for PreToolUse hooks.
+# The legacy {'action': 'block', 'message': ...} shape is silently
+# ignored by current Claude Code, so the hook fires but the rail
+# never intercepts (issue #5). The hookSpecificOutput shape also
+# supports 'ask', which the older {'decision': ...} shape doesn't.
+def _emit_decision(action: str, message: str = "") -> None:
+    if action == 'block':
+        permission = 'deny'
+    elif action == 'ask':
+        permission = 'ask'
+    else:
+        permission = 'allow'
+    payload = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": permission,
+        }
+    }
+    if message and permission != 'allow':
+        payload["hookSpecificOutput"]["permissionDecisionReason"] = message
+    print(json.dumps(payload))
+
 def main():
     """Main hook entry point."""
     try:
         input_data = json.loads(sys.stdin.read())
     except json.JSONDecodeError:
         # Invalid input, allow by default
-        print(json.dumps({"action": "allow"}))
+        _emit_decision("allow")
         return
 
     # Extract command from Bash tool input
@@ -548,35 +571,34 @@ def main():
     cwd = os.getcwd()
 
     if not command:
-        print(json.dumps({"action": "allow"}))
+        _emit_decision("allow")
         return
 
-    # Try daemon first
+    # Try daemon first. The daemon returns the legacy
+    # {'action', 'message'} shape; translate it here rather than
+    # changing the daemon's RPC contract (which other callers
+    # depend on).
     daemon_response = query_slb_daemon(command, session_id, cwd)
     if daemon_response:
-        print(json.dumps(daemon_response))
+        action = daemon_response.get("action", "allow")
+        message = daemon_response.get("message", "")
+        _emit_decision(action, message)
         return
 
-    # Fall back to local classification (match daemon behavior)
+    # Fall back to local classification (match daemon behavior).
     tier, min_approvals = classify(command)
 
     if tier == 'critical':
-        print(json.dumps({
-            "action": "block",
-            "message": f"CRITICAL: Requires {min_approvals} approvals. Use 'slb request' to submit."
-        }))
+        _emit_decision('block',
+            f"SLB CRITICAL: Requires {min_approvals} approvals. Use 'slb request' to submit.")
     elif tier == 'dangerous':
-        print(json.dumps({
-            "action": "block",
-            "message": f"DANGEROUS: Requires {min_approvals} approval. Use 'slb request' to submit."
-        }))
+        _emit_decision('block',
+            f"SLB DANGEROUS: Requires {min_approvals} approval. Use 'slb request' to submit.")
     elif tier == 'caution':
-        print(json.dumps({
-            "action": "ask",
-            "message": "SLB: CAUTION tier command. Proceed?"
-        }))
+        _emit_decision('ask',
+            "SLB CAUTION: command logged for review. Proceed?")
     else:
-        print(json.dumps({"action": "allow"}))
+        _emit_decision("allow")
 
 if __name__ == "__main__":
     main()

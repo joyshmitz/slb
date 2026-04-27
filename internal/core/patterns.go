@@ -741,10 +741,27 @@ func (e *PatternEngine) ExportClaudeHook() string {
 		})
 
 		for _, p := range sortedPatterns {
-			// Escape pattern for Python string
-			escaped := strings.ReplaceAll(p.Pattern, "\\", "\\\\")
-			escaped = strings.ReplaceAll(escaped, "'", "\\'")
-			sb.WriteString(fmt.Sprintf("    re.compile(r'%s', re.IGNORECASE),\n", escaped))
+			// Emit a Python raw string for patterns without
+			// apostrophes — raw strings preserve backslashes
+			// verbatim, so `\s`, `\b`, `\w`, `\.`, etc. survive
+			// intact. Doubling backslashes here (the previous
+			// behavior) silently broke every regex metacharacter
+			// inside the Python re engine: `r'\\s'` is the
+			// literal three-char sequence `\`, `\`, `s` and
+			// matches nothing real (issue #4).
+			//
+			// For patterns that contain a single apostrophe —
+			// rare but legal in custom rules — fall back to a
+			// non-raw single-quoted string with the apostrophe
+			// and any backslash escaped. None of the 52 builtins
+			// hit this path; tests cover both branches.
+			if strings.ContainsAny(p.Pattern, "'") {
+				escaped := strings.ReplaceAll(p.Pattern, `\`, `\\`)
+				escaped = strings.ReplaceAll(escaped, `'`, `\'`)
+				sb.WriteString(fmt.Sprintf("    re.compile('%s', re.IGNORECASE),\n", escaped))
+			} else {
+				sb.WriteString(fmt.Sprintf("    re.compile(r'%s', re.IGNORECASE),\n", p.Pattern))
+			}
 		}
 		sb.WriteString("]\n\n")
 	}
@@ -763,21 +780,27 @@ func (e *PatternEngine) ExportClaudeHook() string {
     """
     command = command.strip()
 
-    # Check tiers in order: safe -> critical -> dangerous -> caution
+    # Check tiers in order: safe -> critical -> dangerous -> caution.
+    # Use re.search (matches anywhere in the command) rather than
+    # re.match (anchored to position 0). The Go-side classifier
+    # uses MatchString, which is unanchored, so patterns such as
+    # the DROP DATABASE rule and the dd-to-/dev rule are
+    # intentionally written without a leading anchor; anchoring
+    # them in the Python fallback would lose every mid-command hit.
     for p in SAFE_PATTERNS:
-        if p.match(command):
+        if p.search(command):
             return ('safe', 0)
 
     for p in CRITICAL_PATTERNS:
-        if p.match(command):
+        if p.search(command):
             return ('critical', 2)
 
     for p in DANGEROUS_PATTERNS:
-        if p.match(command):
+        if p.search(command):
             return ('dangerous', 1)
 
     for p in CAUTION_PATTERNS:
-        if p.match(command):
+        if p.search(command):
             return ('caution', 0)
 
     return ('unknown', 0)
