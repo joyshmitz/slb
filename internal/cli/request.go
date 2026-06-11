@@ -102,6 +102,15 @@ Use --execute with --wait to execute after approval.`,
 			return fmt.Errorf("collecting attachments: %w", err)
 		}
 
+		// Merge the project's custom patterns into the default engine before
+		// classifying. CreateRequest classifies the command against the default
+		// engine to pick its risk tier; without this, custom patterns added via
+		// `slb patterns add` are ignored here and commands are classified
+		// against builtins only.
+		if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+			return fmt.Errorf("loading custom patterns: %w", err)
+		}
+
 		// Create the request using the core logic (config-driven rate limits + integrations).
 		rl := core.NewRateLimiter(dbConn, toRateLimitConfig(cfg))
 		creator := core.NewRequestCreator(dbConn, rl, nil, toRequestCreatorConfig(cfg))

@@ -82,6 +82,15 @@ Examples:
 			return fmt.Errorf("loading config: %w", err)
 		}
 
+		// Merge the project's custom patterns into the default engine before
+		// classifying. The executor's CanExecute re-classifies the command
+		// against the default engine (the "current policy must not require a
+		// higher tier" gate). Without this, project-specific patterns are
+		// invisible here and the gate evaluates against builtins only.
+		if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+			return fmt.Errorf("loading custom patterns: %w", err)
+		}
+
 		// Create executor
 		executor := core.NewExecutor(dbConn, nil).WithNotifier(buildAgentMailNotifier(req.ProjectPath))
 

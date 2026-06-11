@@ -106,6 +106,15 @@ Examples:
 			return writeError(cmd, out, "attachment_error", command, err)
 		}
 
+		// Merge the project's custom patterns into the default engine before
+		// classifying. CreateRequest (and runSafeCommand's re-check) classify
+		// against the default engine; without this, patterns added via
+		// `slb patterns add` are ignored and `run` classifies against builtins
+		// only, so a command the project marked dangerous could be auto-run.
+		if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
+			return writeError(cmd, out, "custom_patterns_failed", command, err)
+		}
+
 		// Step 1: Classify and create request using config-derived limits and notifiers
 		rl := core.NewRateLimiter(dbConn, toRateLimitConfig(cfg))
 		creator := core.NewRequestCreator(dbConn, rl, nil, toRequestCreatorConfig(cfg))

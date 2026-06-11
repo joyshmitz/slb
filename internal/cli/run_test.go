@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,60 @@ func TestRunCommand_Help(t *testing.T) {
 // Note: TestRunCommand_InvalidSession is skipped because the run command
 // calls os.Exit on errors, which would terminate the test process.
 // This behavior would need to be refactored to support proper testing.
+
+// TestRunCommand_HonorsCustomPattern is the regression guard for issue #7
+// Bug 2: `run`'s classification path must merge the project's custom patterns
+// into the default engine. Otherwise a command the project explicitly marked
+// dangerous via `slb patterns add` is classified against builtins only, judged
+// SAFE, and AUTO-RUN with no approval — a security hole for a two-person guard.
+//
+// `echo slbcustompat_run` matches no builtin (so plain `run` would execute it
+// immediately as safe). After a custom DANGEROUS pattern is added, `run --yield`
+// must instead return a pending request and NOT execute. --yield is used so the
+// command returns without blocking and without hitting run's os.Exit paths.
+func TestRunCommand_HonorsCustomPattern(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetRunFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+	)
+
+	const customCmd = "echo slbcustompat_run"
+	if _, err := h.DB.InsertCustomPattern("dangerous", "slbcustompat_run", "test custom pattern", "test"); err != nil {
+		t.Fatalf("InsertCustomPattern: %v", err)
+	}
+
+	cmd := newTestRunCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "run", customCmd,
+		"-s", sess.ID,
+		"-C", h.ProjectDir,
+		"--yield",
+		"-j",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nstdout: %s", err, stdout)
+	}
+
+	// With the custom pattern honored, run must NOT auto-execute the command as
+	// safe — it must create a pending DANGEROUS request and yield.
+	if result["status"] != "pending" {
+		t.Fatalf("custom pattern ignored: expected status=pending (request created), got %v (result=%+v); "+
+			"a missing loadCustomPatternsIntoDefaultEngine would auto-run this command as safe", result["status"], result)
+	}
+	if result["tier"] != string(db.RiskTierDangerous) {
+		t.Errorf("expected tier=dangerous from custom pattern, got %v", result["tier"])
+	}
+	if result["request_id"] == nil || result["request_id"] == "" {
+		t.Error("expected a request_id (a real pending request was created)")
+	}
+}
 
 func TestToRateLimitConfig(t *testing.T) {
 	// Test the helper function that converts config to rate limit config

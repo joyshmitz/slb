@@ -232,6 +232,61 @@ func TestRequestCommand_SafeCommandSkipped(t *testing.T) {
 	}
 }
 
+// TestRequestCommand_HonorsCustomPattern is the regression guard for issue #7
+// Bug 2: `request`'s classification path must merge the project's custom
+// patterns into the default engine, not classify against builtins only.
+//
+// The command `echo slbcustompat_request` matches no builtin pattern (builtins
+// classify it as an unmatched/safe command that `request` would SKIP). After a
+// custom DANGEROUS pattern is added for it, `request` must instead create a
+// real pending DANGEROUS request. Before the fix the load call was missing, so
+// the custom pattern was invisible and the command was skipped.
+func TestRequestCommand_HonorsCustomPattern(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetRequestFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+	)
+
+	// Persist a custom DANGEROUS pattern matching an otherwise-unmatched command.
+	const customCmd = "echo slbcustompat_request"
+	if _, err := h.DB.InsertCustomPattern("dangerous", "slbcustompat_request", "test custom pattern", "test"); err != nil {
+		t.Fatalf("InsertCustomPattern: %v", err)
+	}
+
+	cmd := newTestRequestCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "request", customCmd,
+		"-s", sess.ID,
+		"-C", h.ProjectDir,
+		"-j",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nstdout: %s", err, stdout)
+	}
+
+	// With the custom pattern honored, the command must NOT be skipped — it
+	// must produce a pending DANGEROUS request.
+	if result["status"] == "skipped" {
+		t.Fatalf("custom pattern ignored: command was skipped (classified against builtins only); result=%+v", result)
+	}
+	if result["status"] != string(db.StatusPending) {
+		t.Errorf("expected status=pending, got %v (result=%+v)", result["status"], result)
+	}
+	if result["tier"] != string(db.RiskTierDangerous) {
+		t.Errorf("expected tier=dangerous from custom pattern, got %v", result["tier"])
+	}
+	if result["request_id"] == nil || result["request_id"] == "" {
+		t.Error("expected a request_id (a real request was created)")
+	}
+}
+
 func TestRequestCommand_InvalidSession(t *testing.T) {
 	h := testutil.NewHarness(t)
 	resetRequestFlags()

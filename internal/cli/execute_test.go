@@ -188,6 +188,62 @@ func TestExecuteCommand_ExecutesApprovedRequest(t *testing.T) {
 	}
 }
 
+// TestExecuteCommand_HonorsCustomPattern is the regression guard for issue #7
+// Bug 2 on the execute path. execute's CanExecute re-classifies the command
+// against the default engine (the "current policy must not require a higher
+// tier than approved" gate). It must merge the project's custom patterns first;
+// otherwise a project that escalates a command's risk via `slb patterns add`
+// after approval is silently bypassed and the stale low-tier approval executes.
+//
+// Here a request is approved at CAUTION tier for a command matching no builtin.
+// A custom CRITICAL pattern is then added for that command. execute must REFUSE
+// with a policy-escalation error instead of running. Before the fix the custom
+// pattern was invisible to CanExecute, so the gate passed and it executed.
+func TestExecuteCommand_HonorsCustomPattern(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetExecuteFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+	)
+	// Command matches no builtin; approved at the low CAUTION tier.
+	req := testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand(testutil.TruePath()+" slbcustompat_execute", h.ProjectDir, true),
+		testutil.WithRisk(db.RiskTierCaution),
+	)
+	req.Command.Hash = db.ComputeCommandHash(req.Command)
+	h.DB.Exec(`UPDATE requests SET command_hash = ?, risk_tier = ? WHERE id = ?`, req.Command.Hash, string(db.RiskTierCaution), req.ID)
+	h.DB.UpdateRequestStatus(req.ID, db.StatusApproved)
+
+	// Project later escalates this command to CRITICAL via a custom pattern.
+	if _, err := h.DB.InsertCustomPattern("critical", "slbcustompat_execute", "test custom pattern", "test"); err != nil {
+		t.Fatalf("InsertCustomPattern: %v", err)
+	}
+
+	cmd := newTestExecuteCmd(h.DBPath)
+	_, err := executeCommandCapture(t, cmd, "execute", req.ID,
+		"--session-id", sess.ID,
+		"-j",
+	)
+
+	if err == nil {
+		t.Fatal("custom pattern ignored: execute ran a command the project escalated to CRITICAL after a CAUTION-tier approval")
+	}
+	if !strings.Contains(err.Error(), "cannot execute") && !strings.Contains(err.Error(), "escalation") && !strings.Contains(err.Error(), "higher tier") {
+		t.Errorf("expected a policy-escalation refusal, got: %v", err)
+	}
+
+	// The request must NOT have executed.
+	updated, gerr := h.DB.GetRequest(req.ID)
+	if gerr != nil {
+		t.Fatalf("failed to get request: %v", gerr)
+	}
+	if updated.Status == db.StatusExecuted {
+		t.Errorf("request was executed despite the custom-pattern escalation gate")
+	}
+}
+
 func TestExecuteCommand_Help(t *testing.T) {
 	h := testutil.NewHarness(t)
 	resetExecuteFlags()
