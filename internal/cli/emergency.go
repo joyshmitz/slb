@@ -32,7 +32,8 @@ func init() {
 	emergencyCmd.Flags().BoolVarP(&flagEmergencyYes, "yes", "y", false, "skip interactive confirmation")
 	emergencyCmd.Flags().StringVar(&flagEmergencyAck, "ack", "", "command hash acknowledgment (required with --yes)")
 	emergencyCmd.Flags().BoolVar(&flagEmergencyCapture, "capture-rollback", false, "capture state for rollback")
-	emergencyCmd.Flags().IntVarP(&flagEmergencyTimeout, "timeout", "t", 300, "execution timeout in seconds")
+	// No -t shorthand: -t (--toon) is owned by the root persistent flags.
+	emergencyCmd.Flags().IntVar(&flagEmergencyTimeout, "timeout", 300, "execution timeout in seconds")
 	emergencyCmd.Flags().StringVar(&flagEmergencyLogDir, "log-dir", ".slb/logs", "directory for execution logs")
 
 	rootCmd.AddCommand(emergencyCmd)

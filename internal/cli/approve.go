@@ -27,7 +27,10 @@ var (
 )
 
 func init() {
-	approveCmd.Flags().StringVarP(&flagApproveSessionID, "session-id", "s", "", "reviewer session ID (required)")
+	// -s is owned by the root persistent --session-id; don't reclaim the
+	// shorthand here (it collides/shadows the persistent flag). Pass the
+	// session via the long --session-id flag.
+	approveCmd.Flags().StringVar(&flagApproveSessionID, "session-id", "", "reviewer session ID (required)")
 	approveCmd.Flags().StringVarP(&flagApproveSessionKey, "session-key", "k", "", "session HMAC key for signing (required)")
 	approveCmd.Flags().StringVarP(&flagApproveComments, "comments", "m", "", "additional comments")
 	approveCmd.Flags().StringVar(&flagApproveTargetProject, "target-project", "", "target project path for cross-project approvals")
@@ -54,10 +57,10 @@ For cross-project reviews, use --target-project to specify which project's
 database contains the request you want to approve.
 
 	Examples:
-	  slb approve abc123 -s $SESSION_ID -k $SESSION_KEY
-	  slb approve abc123 -s $SESSION_ID -k $SESSION_KEY -m "Looks safe"
-	  slb approve abc123 -s $SESSION_ID -k $SESSION_KEY --reason-response "Valid use case"
-	  slb approve abc123 -s $SESSION_ID -k $SESSION_KEY --target-project /path/to/other/project`,
+	  slb approve abc123 --session-id $SESSION_ID -k $SESSION_KEY
+	  slb approve abc123 --session-id $SESSION_ID -k $SESSION_KEY -m "Looks safe"
+	  slb approve abc123 --session-id $SESSION_ID -k $SESSION_KEY --reason-response "Valid use case"
+	  slb approve abc123 --session-id $SESSION_ID -k $SESSION_KEY --target-project /path/to/other/project`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		requestID := args[0]

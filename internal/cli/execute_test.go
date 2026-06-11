@@ -21,18 +21,21 @@ func newTestExecuteCmd(dbPath string) *cobra.Command {
 	root.PersistentFlags().StringVar(&flagDB, "db", dbPath, "database path")
 	root.PersistentFlags().StringVarP(&flagOutput, "output", "o", "text", "output format")
 	root.PersistentFlags().BoolVarP(&flagJSON, "json", "j", false, "json output")
+	root.PersistentFlags().BoolVarP(&flagTOON, "toon", "t", false, "toon output")
 	root.PersistentFlags().StringVarP(&flagProject, "project", "C", "", "project directory")
 	root.PersistentFlags().StringVarP(&flagConfig, "config", "c", "", "config file")
 
-	// Create a fresh executeCmd
+	// Create a fresh executeCmd. Mirror production: no -s/-t local shorthand
+	// (-s and -t are owned by the persistent flags). Session is passed via the
+	// long --session-id flag; -t is the persistent --toon, so --timeout is used.
 	execCmd := &cobra.Command{
 		Use:   "execute <request-id>",
 		Short: "Execute an approved request",
 		Args:  cobra.ExactArgs(1),
 		RunE:  executeCmd.RunE,
 	}
-	execCmd.Flags().StringVarP(&flagExecuteSessionID, "session-id", "s", "", "executor session ID")
-	execCmd.Flags().IntVarP(&flagExecuteTimeout, "timeout", "t", 300, "timeout seconds")
+	execCmd.Flags().StringVar(&flagExecuteSessionID, "session-id", "", "executor session ID")
+	execCmd.Flags().IntVar(&flagExecuteTimeout, "timeout", 300, "timeout seconds")
 	execCmd.Flags().BoolVar(&flagExecuteBackground, "background", false, "run in background")
 	execCmd.Flags().StringVar(&flagExecuteLogDir, "log-dir", ".slb/logs", "log directory")
 
@@ -45,6 +48,7 @@ func resetExecuteFlags() {
 	flagDB = ""
 	flagOutput = "text"
 	flagJSON = false
+	flagTOON = false
 	flagProject = ""
 	flagConfig = ""
 	flagExecuteSessionID = ""
@@ -94,7 +98,7 @@ func TestExecuteCommand_RequestNotFound(t *testing.T) {
 
 	cmd := newTestExecuteCmd(h.DBPath)
 	_, err := executeCommandCapture(t, cmd, "execute", "nonexistent-request-id",
-		"-s", sess.ID,
+		"--session-id", sess.ID,
 		"-j",
 	)
 
@@ -118,7 +122,7 @@ func TestExecuteCommand_CannotExecutePending(t *testing.T) {
 
 	cmd := newTestExecuteCmd(h.DBPath)
 	_, err := executeCommandCapture(t, cmd, "execute", req.ID,
-		"-s", sess.ID,
+		"--session-id", sess.ID,
 		"-j",
 	)
 
@@ -150,7 +154,7 @@ func TestExecuteCommand_ExecutesApprovedRequest(t *testing.T) {
 
 	cmd := newTestExecuteCmd(h.DBPath)
 	stdout, err := executeCommandCapture(t, cmd, "execute", req.ID,
-		"-s", sess.ID,
+		"--session-id", sess.ID,
 		"-j",
 	)
 
@@ -231,8 +235,8 @@ func TestExecuteCommand_CustomTimeout(t *testing.T) {
 
 	cmd := newTestExecuteCmd(h.DBPath)
 	stdout, err := executeCommandCapture(t, cmd, "execute", req.ID,
-		"-s", sess.ID,
-		"-t", "10", // Short timeout
+		"--session-id", sess.ID,
+		"--timeout", "10", // Short timeout (-t is now persistent --toon)
 		"-j",
 	)
 

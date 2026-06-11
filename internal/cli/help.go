@@ -102,7 +102,7 @@ func showQuickReference() {
 	requestor := renderSection(useUnicode, "🔶 AS REQUESTOR (dangerous commands)", []string{
 		bullet("slb run \"rm -rf ./build\" -s $SID --reason \"Cleanup\" --timeout 300 -j", "classify, request approval, wait, then execute"),
 		bullet("slb status <request-id> --wait -j", "block until approved/rejected/timeout"),
-		bullet("slb execute <request-id> -s $SID -j", "execute once approved (client-side)"),
+		bullet("slb execute <request-id> --session-id $SID -j", "execute once approved (client-side)"),
 	})
 
 	plumbing := renderSection(useUnicode, "🔧 PLUMBING (advanced)", []string{
@@ -114,8 +114,8 @@ func showQuickReference() {
 	reviewer := renderSection(useUnicode, "🔷 AS REVIEWER (check frequently)", []string{
 		bullet("slb pending -j", "list pending approvals"),
 		bullet("slb review <id> -j", "inspect details"),
-		bullet("slb approve <id> -s $SID -k $SKEY --reason-response \"Verified\"", "approve (signed)"),
-		bullet("slb reject <id> -s $SID -k $SKEY --reason \"Need safer path\"", "reject (signed)"),
+		bullet("slb approve <id> --session-id $SID -k $SKEY --reason-response \"Verified\"", "approve (signed)"),
+		bullet("slb reject <id> --session-id $SID -k $SKEY --reason \"Need safer path\"", "reject (signed)"),
 	})
 
 	patterns := renderSection(useUnicode, "🛡️ PATTERNS (agents can add, not remove)", []string{

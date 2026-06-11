@@ -106,9 +106,12 @@ func init() {
 	// patterns test/check flags
 	patternsTestCmd.Flags().BoolVar(&flagPatternExitCode, "exit-code", false, "return non-zero exit code if approval needed")
 
-	// patterns export flags
+	// patterns export flags.
+	// Named --output-file (not --output): the persistent --output/-o is the
+	// output FORMAT (text/json/yaml/toon). A local --output here would shadow
+	// that persistent flag, breaking `slb patterns export -o json`.
 	patternsExportCmd.Flags().StringVarP(&flagPatternFormat, "format", "f", "json", "export format: json, yaml, claude-hook")
-	patternsExportCmd.Flags().StringVarP(&flagPatternOutputFile, "output", "o", "", "output file (default: stdout)")
+	patternsExportCmd.Flags().StringVar(&flagPatternOutputFile, "output-file", "", "output file (default: stdout)")
 
 	// Add subcommands
 	patternsCmd.AddCommand(patternsListCmd)
@@ -454,10 +457,10 @@ Available formats:
   claude-hook - Python code for Claude Code hooks
 
 Examples:
-  slb patterns export                         # JSON to stdout
-  slb patterns export --format=claude-hook    # Python to stdout
-  slb patterns export -o patterns.json        # JSON to file
-  slb patterns export -f claude-hook -o hook.py  # Python to file`,
+  slb patterns export                              # JSON to stdout
+  slb patterns export --format=claude-hook         # Python to stdout
+  slb patterns export --output-file patterns.json  # JSON to file
+  slb patterns export -f claude-hook --output-file hook.py  # Python to file`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if _, err := loadCustomPatternsIntoDefaultEngine(); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)

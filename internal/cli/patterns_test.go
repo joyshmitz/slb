@@ -88,7 +88,9 @@ func newTestPatternsCmd(dbPath string) *cobra.Command {
 		RunE:  patternsExportCmd.RunE,
 	}
 	exportCmd.Flags().StringVarP(&flagPatternFormat, "format", "f", "json", "export format")
-	exportCmd.Flags().StringVarP(&flagPatternOutputFile, "output", "o", "", "output file")
+	// Mirror production: --output-file (no -o shorthand); -o/--output is the
+	// persistent output FORMAT flag.
+	exportCmd.Flags().StringVar(&flagPatternOutputFile, "output-file", "", "output file")
 
 	// Version command
 	versionCmd := &cobra.Command{

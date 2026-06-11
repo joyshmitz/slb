@@ -10,6 +10,7 @@ import (
 
 	"github.com/Dicklesworthstone/slb/internal/testutil"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // executeCommand runs a cobra command with the given args and returns stdout, stderr, and error.
@@ -123,6 +124,99 @@ func TestRootCommand_GlobalFlags(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestProductionCommandTree_NoLocalFlagCollidesWithPersistent walks the REAL
+// rootCmd tree (every command and subcommand actually wired into the binary)
+// and asserts that no command-local flag reuses a shorthand — or silently
+// re-purposes a long name — that an ancestor's persistent flag already owns.
+//
+// This is a regression guard for issue #7. Two distinct failure modes were
+// shipped at once:
+//
+//  1. Hard shorthand collision: `slb execute` redefined -t for --timeout while
+//     the root persistent --toon already owns -t. cobra/pflag refuses to merge
+//     the duplicate shorthand and PANICS at runtime (`slb execute --help`
+//     crashed). approve/reject/execute/watch did the same with -s
+//     (--session-id), and hook/patterns with -o (--output).
+//
+//  2. Silent long-name shadowing with a DIFFERENT meaning: `hook generate` and
+//     `patterns export` defined a local --output bound to a path, shadowing the
+//     persistent --output that selects the text/json/yaml/toon FORMAT. The
+//     persistent format flag became unreachable on those subcommands
+//     (`slb hook generate -o json` wrote to a dir named "json" instead of
+//     emitting JSON). Those locals are now --output-dir / --output-file.
+//
+// Walking the production tree (not a hand-rolled one) is essential: the bug
+// only manifests on the wired-up commands, and a fresh test tree could drift.
+func TestProductionCommandTree_NoLocalFlagCollidesWithPersistent(t *testing.T) {
+	// A live shorthand collision makes cobra/pflag PANIC the first time the
+	// offending command's flags are merged (which the LocalFlags() call below
+	// triggers). Recover so the guard reports a clean, actionable failure
+	// instead of an opaque stack trace.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("walking the production command tree panicked, which means a "+
+				"local flag reuses a persistent flag's shorthand (issue #7 regression): %v", r)
+		}
+	}()
+
+	// inheritedShorthand/inheritedLong map an inherited persistent flag's
+	// shorthand/long-name to the "owner --flag" string for diagnostics.
+	var walk func(cmd *cobra.Command, inheritedShorthand, inheritedLong map[string]string)
+	walk = func(cmd *cobra.Command, inheritedShorthand, inheritedLong map[string]string) {
+		// Check this command's LOCAL (non-inherited) flags against everything
+		// an ancestor's persistent flags already claim.
+		cmd.LocalFlags().VisitAll(func(flag *pflag.Flag) {
+			if flag.Shorthand != "" {
+				if owner, ok := inheritedShorthand[flag.Shorthand]; ok {
+					t.Errorf("%s: local flag --%s reuses shorthand -%s already owned by persistent flag %s "+
+						"(cobra/pflag panics or silently shadows on this command)",
+						cmd.CommandPath(), flag.Name, flag.Shorthand, owner)
+				}
+			}
+			if owner, ok := inheritedLong[flag.Name]; ok {
+				// A local long flag with the SAME name as an inherited
+				// persistent one shadows it entirely. That is only safe when
+				// the two are intentionally the same knob (e.g. a per-command
+				// --session-id that intentionally overrides the persistent one
+				// of the same name). It is a BUG when the local flag means
+				// something different — caught here by name: a local --output
+				// (path) shadowing the persistent --output (format) must be
+				// renamed (--output-dir/--output-file), which removes it from
+				// this collision set.
+				if flag.Name == "output" {
+					t.Errorf("%s: local flag --%s shadows persistent flag %s which has a different meaning "+
+						"(output FORMAT vs a path); rename the local flag (e.g. --output-dir/--output-file)",
+						cmd.CommandPath(), flag.Name, owner)
+				}
+			}
+		})
+
+		// Extend the inherited sets with THIS command's persistent flags for
+		// the descent into children.
+		nextShorthand := make(map[string]string, len(inheritedShorthand))
+		for k, v := range inheritedShorthand {
+			nextShorthand[k] = v
+		}
+		nextLong := make(map[string]string, len(inheritedLong))
+		for k, v := range inheritedLong {
+			nextLong[k] = v
+		}
+		cmd.PersistentFlags().VisitAll(func(flag *pflag.Flag) {
+			owner := cmd.CommandPath() + " --" + flag.Name
+			if flag.Shorthand != "" {
+				nextShorthand[flag.Shorthand] = owner
+			}
+			nextLong[flag.Name] = owner
+		})
+
+		for _, child := range cmd.Commands() {
+			walk(child, nextShorthand, nextLong)
+		}
+	}
+
+	walk(rootCmd, map[string]string{}, map[string]string{})
 }
 
 func TestVersionCommand_TextOutput(t *testing.T) {

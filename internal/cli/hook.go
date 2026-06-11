@@ -25,8 +25,12 @@ func init() {
 	hookInstallCmd.Flags().BoolVar(&flagHookMerge, "merge", true, "preserve existing hooks (default)")
 	hookInstallCmd.Flags().BoolVarP(&flagHookForce, "force", "f", false, "overwrite existing hooks")
 
-	// hook generate flags
-	hookGenerateCmd.Flags().StringVarP(&flagHookOutputDir, "output", "o", "", "output directory (default: ~/.slb/hooks/)")
+	// hook generate flags.
+	// Named --output-dir (not --output): the persistent --output/-o is the
+	// output FORMAT (text/json/yaml/toon). A local --output here would shadow
+	// that persistent flag entirely, making `slb hook generate -o json` write
+	// to a directory literally named "json" instead of emitting JSON.
+	hookGenerateCmd.Flags().StringVar(&flagHookOutputDir, "output-dir", "", "output directory (default: ~/.slb/hooks/)")
 
 	// Add subcommands
 	hookCmd.AddCommand(hookGenerateCmd)
@@ -58,7 +62,7 @@ var hookGenerateCmd = &cobra.Command{
 	Long: `Generate the SLB guard hook script with embedded patterns.
 
 The generated script will be written to ~/.slb/hooks/slb_guard.py by default.
-Use --output to specify a different directory.
+Use --output-dir to specify a different directory.
 
 The script includes:
 - Embedded pattern matching for offline classification

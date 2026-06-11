@@ -35,7 +35,8 @@ func newTestEmergencyCmd(dbPath string) *cobra.Command {
 	emCmd.Flags().BoolVarP(&flagEmergencyYes, "yes", "y", false, "skip interactive confirmation")
 	emCmd.Flags().StringVar(&flagEmergencyAck, "ack", "", "command hash acknowledgment")
 	emCmd.Flags().BoolVar(&flagEmergencyCapture, "capture-rollback", false, "capture state for rollback")
-	emCmd.Flags().IntVarP(&flagEmergencyTimeout, "timeout", "t", 300, "execution timeout")
+	// No -t shorthand: -t (--toon) is owned by the root persistent flags.
+	emCmd.Flags().IntVar(&flagEmergencyTimeout, "timeout", 300, "execution timeout")
 	emCmd.Flags().StringVar(&flagEmergencyLogDir, "log-dir", ".slb/logs", "log directory")
 
 	root.AddCommand(emCmd)

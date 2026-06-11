@@ -23,7 +23,10 @@ var (
 )
 
 func init() {
-	watchCmd.Flags().StringVarP(&flagWatchSessionID, "session-id", "s", "", "session ID for auto-approve attribution")
+	// -s is owned by the root persistent --session-id; don't reclaim the
+	// shorthand here (it collides/shadows the persistent flag). Pass the
+	// session via the long --session-id flag.
+	watchCmd.Flags().StringVar(&flagWatchSessionID, "session-id", "", "session ID for auto-approve attribution")
 	watchCmd.Flags().BoolVar(&flagWatchAutoApproveCaution, "auto-approve-caution", false, "automatically approve CAUTION tier requests")
 	watchCmd.Flags().DurationVar(&flagWatchPollInterval, "poll-interval", 2*time.Second, "polling interval when daemon not available")
 
