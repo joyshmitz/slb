@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/slb/internal/core"
 	"github.com/Dicklesworthstone/slb/internal/db"
 	"github.com/Dicklesworthstone/slb/internal/testutil"
 	"github.com/spf13/cobra"
@@ -284,6 +285,40 @@ func TestRequestCommand_HonorsCustomPattern(t *testing.T) {
 	}
 	if result["request_id"] == nil || result["request_id"] == "" {
 		t.Error("expected a request_id (a real request was created)")
+	}
+}
+
+// TestSkippedRequestResponse_NilClassification is the regression guard for
+// issue #7 Bug 3: the skipped-request rendering used to dereference
+// result.Classification.Tier unconditionally. Classification is a pointer, so a
+// skipped result with a nil Classification panicked. The rendering now guards
+// the nil and omits the "tier" field rather than crashing.
+func TestSkippedRequestResponse_NilClassification(t *testing.T) {
+	// Must not panic on a nil Classification.
+	resp := skippedRequestResponse(&core.CreateRequestResult{
+		Skipped:        true,
+		SkipReason:     "Command is classified as safe and does not require approval",
+		Classification: nil,
+	}, "ls -la")
+
+	if resp["status"] != "skipped" {
+		t.Errorf("expected status=skipped, got %v", resp["status"])
+	}
+	if resp["command"] != "ls -la" {
+		t.Errorf("expected command to be echoed, got %v", resp["command"])
+	}
+	if _, ok := resp["tier"]; ok {
+		t.Errorf("expected tier to be omitted when Classification is nil, got %v", resp["tier"])
+	}
+
+	// And the present-classification path still emits the tier.
+	resp2 := skippedRequestResponse(&core.CreateRequestResult{
+		Skipped:        true,
+		SkipReason:     "safe",
+		Classification: &core.MatchResult{Tier: core.RiskTier(core.RiskSafe)},
+	}, "ls")
+	if resp2["tier"] == nil {
+		t.Error("expected tier to be present when Classification is set")
 	}
 }
 

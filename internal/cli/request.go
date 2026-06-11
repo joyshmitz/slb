@@ -136,12 +136,7 @@ Use --execute with --wait to execute after approval.`,
 
 		// If skipped (safe command), return immediately
 		if result.Skipped {
-			return out.Write(map[string]any{
-				"status":  "skipped",
-				"reason":  result.SkipReason,
-				"tier":    result.Classification.Tier,
-				"command": command,
-			})
+			return out.Write(skippedRequestResponse(result, command))
 		}
 
 		request := result.Request
@@ -246,4 +241,26 @@ Use --execute with --wait to execute after approval.`,
 
 		return out.Write(resp)
 	},
+}
+
+// skippedRequestResponse builds the JSON payload for a request that was skipped
+// (a safe/unmatched command, so no request row was created).
+//
+// result.Classification is a pointer and, while the current core always sets it
+// on the skipped paths, nothing in the type system guarantees that — a future
+// or alternate skip path (e.g. an early skip before classification) could leave
+// it nil. The old code dereferenced result.Classification.Tier unconditionally,
+// a latent nil-pointer panic. Guard it: the "tier" field is included only when
+// a classification is present (omitted otherwise rather than emitting a bogus
+// zero value).
+func skippedRequestResponse(result *core.CreateRequestResult, command string) map[string]any {
+	resp := map[string]any{
+		"status":  "skipped",
+		"reason":  result.SkipReason,
+		"command": command,
+	}
+	if result.Classification != nil {
+		resp["tier"] = result.Classification.Tier
+	}
+	return resp
 }
